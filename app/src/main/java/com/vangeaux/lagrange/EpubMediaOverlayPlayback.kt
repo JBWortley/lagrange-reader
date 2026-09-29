@@ -46,7 +46,8 @@ import kotlinx.coroutines.withContext
 
 internal data class EpubMediaOverlayPlayableClip(
     val clip: EpubMediaOverlayClip,
-    val audioFile: File
+    val audioFile: File,
+    val sentenceText: String? = null
 )
 
 /** Retains narration ownership while the reader Activity is recreated for configuration changes. */
@@ -126,6 +127,7 @@ internal object EpubMediaOverlayResources {
         if (!targetDir.isDirectory && !targetDir.mkdirs()) return@withContext emptyList()
         ZipFile(epubFile).use { zip ->
             val extracted = mutableMapOf<String, File>()
+            val sentenceReader = EpubMediaOverlaySentenceReader(zip)
             var totalBytes = 0L
             playlist.items.mapNotNull { clip ->
                 val audio = extracted[clip.audioHref] ?: run {
@@ -157,8 +159,44 @@ internal object EpubMediaOverlayResources {
                     extracted[clip.audioHref] = destination
                     destination
                 }
-                EpubMediaOverlayPlayableClip(clip, audio)
+                EpubMediaOverlayPlayableClip(
+                    clip = clip,
+                    audioFile = audio,
+                    sentenceText = sentenceReader.read(clip)
+                )
             }
+        }
+    }
+
+    private class EpubMediaOverlaySentenceReader(private val zip: ZipFile) {
+        private val documents = mutableMapOf<String, org.w3c.dom.Document?>()
+        private val factory = javax.xml.parsers.DocumentBuilderFactory.newInstance().apply {
+            isNamespaceAware = true
+            isExpandEntityReferences = false
+            runCatching { setFeature(javax.xml.XMLConstants.FEATURE_SECURE_PROCESSING, true) }
+            runCatching { setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
+            runCatching { setFeature("http://xml.org/sax/features/external-general-entities", false) }
+            runCatching { setFeature("http://xml.org/sax/features/external-parameter-entities", false) }
+        }
+
+        fun read(clip: EpubMediaOverlayClip): String? {
+            val fragment = clip.textFragment?.takeIf(String::isNotBlank) ?: return null
+            val document = documents.getOrPut(clip.textHref) {
+                val entry = zip.getEntry(clip.textHref) ?: return@getOrPut null
+                runCatching {
+                    zip.getInputStream(entry).use { factory.newDocumentBuilder().parse(it) }
+                }.getOrNull()
+            } ?: return null
+            val elements = document.getElementsByTagName("*")
+            val sentenceElement = (0 until elements.length)
+                .asSequence()
+                .mapNotNull { elements.item(it) as? org.w3c.dom.Element }
+                .firstOrNull { it.getAttribute("id") == fragment }
+                ?: return null
+            return sentenceElement.textContent
+                .replace(Regex("\\s+"), " ")
+                .trim()
+                .takeIf(String::isNotBlank)
         }
     }
 }
@@ -218,7 +256,7 @@ internal fun epubMediaOverlayMediaItem(
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle("Read-along · $bookTitle")
-                .setArtist("EPUB narration")
+                .setArtist(clip.sentenceText ?: "EPUB narration")
                 .build()
         )
         .setClippingConfiguration(epubMediaOverlayClippingConfiguration(clip.clip))
@@ -235,13 +273,16 @@ internal fun epubMediaOverlayClippingConfiguration(clip: EpubMediaOverlayClip): 
         }
         .build()
 
-internal fun createEpubMediaOverlayPlayer(context: Context): ExoPlayer = ExoPlayer.Builder(context)
+internal fun createEpubMediaOverlayPlayer(
+    context: Context,
+    pauseForAudioInterruptions: Boolean
+): ExoPlayer = ExoPlayer.Builder(context)
     .setAudioAttributes(
         AudioAttributes.Builder()
             .setUsage(C.USAGE_MEDIA)
             .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
             .build(),
-        true
+        pauseForAudioInterruptions
     )
     .setHandleAudioBecomingNoisy(true)
     .build()

@@ -607,9 +607,11 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
         )
         val audioPlaybackController =
             (application as BookOrbitApplication).audioPlaybackController
+        val readAlongSessionActive = mediaOverlayPlayback.player != null
         if (action == null || !volumeButtonNavigationEnabled(
                 readerEnabled = readerPreferences.volumeButtonPageNavigation,
-                audiobookSessionActive = audioPlaybackController.hasActiveAudiobookSession()
+                audiobookSessionActive = audioPlaybackController.hasActiveAudiobookSession(),
+                readAlongSessionActive = readAlongSessionActive
             )
         ) {
             return super.dispatchKeyEvent(event)
@@ -1170,7 +1172,11 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
                 return@launch
             }
             val startIndex = requestedIndex ?: resumeIndex
-            val player = createEpubMediaOverlayPlayer(this@ReadiumEpubReaderActivity)
+            val player = createEpubMediaOverlayPlayer(
+                context = this@ReadiumEpubReaderActivity,
+                pauseForAudioInterruptions = appPreferencesStore.read()
+                    .pauseAudiobookForAudioInterruptions
+            )
             val sessionBook = BookSummary(
                 libraryId = libraryId,
                 id = bookId.orEmpty(),
@@ -2121,6 +2127,7 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
     }
 
     private fun finishReader() {
+        closeMediaOverlayPlayback()
         endReadingSession()
         updateResult(ReaderCompletionReason.USER_CLOSED)
         finish()
@@ -2210,7 +2217,10 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
             mediaOverlayPlayback.player?.removeListener(listener)
         }
         mediaOverlayPlayerListener = null
-        if (isFinishing && !isChangingConfigurations) endReadingSession()
+        if (isFinishing && !isChangingConfigurations) {
+            mediaOverlayPlayback.closePlayback()
+            endReadingSession()
+        }
         super.onDestroy()
         publication?.close()
         publication = null

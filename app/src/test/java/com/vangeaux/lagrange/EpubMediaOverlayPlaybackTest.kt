@@ -8,11 +8,24 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class EpubMediaOverlayPlaybackTest {
+    @Test
+    fun `read-along audio focus policy follows the shared audiobook preference`() {
+        assertTrue(
+            AppPreferences(pauseAudiobookForAudioInterruptions = true)
+                .pauseAudiobookForAudioInterruptions
+        )
+        assertFalse(
+            AppPreferences(pauseAudiobookForAudioInterruptions = false)
+                .pauseAudiobookForAudioInterruptions
+        )
+    }
+
     @Test
     fun `selection resolves to the media overlay sentence containing its fragment`() {
         val clips = listOf(
@@ -77,6 +90,9 @@ class EpubMediaOverlayPlaybackTest {
         val epub = Files.createTempFile("overlay-resource", ".epub").toFile()
         val cache = Files.createTempDirectory("overlay-cache").toFile()
         ZipOutputStream(epub.outputStream()).use { zip ->
+            zip.putNextEntry(ZipEntry("OPS/chapter.xhtml"))
+            zip.write("<html><body><p id=\"sentence-a\">Hello <b>world</b>.</p><p id=\"sentence-b\">Second sentence.</p></body></html>".toByteArray())
+            zip.closeEntry()
             zip.putNextEntry(ZipEntry("OPS/audio/voice.mp3"))
             zip.write(byteArrayOf(1, 2, 3, 4))
             zip.closeEntry()
@@ -91,18 +107,20 @@ class EpubMediaOverlayPlaybackTest {
             clipEndSeconds = 1.5,
             durationSeconds = 1.25
         )
+        val secondClip = clip.copy(index = 1, textFragment = "sentence-b")
 
         val extracted = EpubMediaOverlayResources.extract(
             epubFile = epub,
-            playlist = EpubMediaOverlayPlaylist(listOf(clip)),
+            playlist = EpubMediaOverlayPlaylist(listOf(clip, secondClip)),
             cacheDir = cache,
             readerKey = "book|file"
         )
 
-        assertEquals(1, extracted.size)
-        assertTrue(extracted.single().audioFile.isFile)
-        assertEquals("1, 2, 3, 4", extracted.single().audioFile.readBytes().joinToString(", "))
-        assertTrue(extracted.single().audioFile.canonicalPath.startsWith(cache.canonicalPath))
+        assertEquals(2, extracted.size)
+        assertTrue(extracted.all { it.audioFile.isFile })
+        assertEquals(listOf("Hello world.", "Second sentence."), extracted.map { it.sentenceText })
+        assertEquals("1, 2, 3, 4", extracted.first().audioFile.readBytes().joinToString(", "))
+        assertTrue(extracted.all { it.audioFile.canonicalPath.startsWith(cache.canonicalPath) })
     }
 
     private fun playableClip(index: Int, href: String, fragment: String) = EpubMediaOverlayPlayableClip(
