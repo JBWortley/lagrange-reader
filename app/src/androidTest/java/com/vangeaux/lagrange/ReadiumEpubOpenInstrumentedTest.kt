@@ -49,6 +49,70 @@ import org.readium.r2.shared.publication.services.positions
 
 @RunWith(AndroidJUnit4::class)
 class ReadiumEpubOpenInstrumentedTest {
+    @Test
+    fun AndroidBackStopsAnActiveTtsServiceSession() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val epub = File(context.cacheDir, "readium-close-tts.epub")
+        val readerKey = "instrumented-close-tts-${System.nanoTime()}"
+        writeMultiResourceEpub(epub)
+        val connected = CompletableDeferred<EpubTtsPlaybackService.PlaybackBinder>()
+        val connection = EpubTtsServiceConnection(
+            context = context,
+            onConnected = { connected.complete(it) },
+            onDisconnected = {}
+        )
+        var binder: EpubTtsPlaybackService.PlaybackBinder? = null
+        connection.bind()
+        try {
+            val service = withTimeout(5_000L) { connected.await() }
+            binder = service
+            ActivityScenario.launch<ReadiumEpubReaderActivity>(
+                ReadiumEpubReaderActivity.createIntent(
+                    context = context,
+                    file = epub,
+                    title = "TTS close regression",
+                    readerKey = readerKey,
+                    launchMode = ReaderLaunchMode.NORMAL,
+                    initialChapter = 0,
+                    initialPage = 0,
+                    initialPageCount = 1,
+                    initialPercent = null
+                )
+            ).use { scenario ->
+                val locator = awaitEpubLocator(scenario, context, readerKey)
+                withContext(Dispatchers.Main.immediate) {
+                    service.open(
+                        EpubTtsSessionSpec(
+                            readerKey = readerKey,
+                            libraryId = "",
+                            bookId = null,
+                            fileId = null,
+                            filePath = epub.absolutePath,
+                            title = "TTS close regression",
+                            initialLocator = locator,
+                            settings = EpubTtsSettings(),
+                            playWhenReady = false
+                        )
+                    )
+                    assertTrue(service.state.value.hasSession)
+                }
+
+                scenario.onActivity { activity ->
+                    activity.onBackPressedDispatcher.onBackPressed()
+                    if (!activity.isFinishing) {
+                        activity.onBackPressedDispatcher.onBackPressed()
+                    }
+                    assertTrue("Android Back did not finish the EPUB reader", activity.isFinishing)
+                }
+                assertEquals(EpubTtsServiceState(), service.state.value)
+            }
+        } finally {
+            withContext(Dispatchers.Main.immediate) { binder?.stop() }
+            connection.unbind()
+            epub.delete()
+        }
+    }
+
     @OptIn(ExperimentalReadiumApi::class)
     @Test
     fun readiumTtsInitializesForTextualEpubWhenDeviceHasSpeechEngine() = runBlocking {

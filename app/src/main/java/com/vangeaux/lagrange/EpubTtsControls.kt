@@ -1,6 +1,5 @@
 package com.vangeaux.lagrange
 
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,7 +20,6 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -170,18 +168,16 @@ private fun EpubTtsSettingsDialog(
                 TtsRateSetting(
                     title = "Speed",
                     value = speedText,
-                    options = EPUB_TTS_PLAYBACK_SPEED_OPTIONS,
                     isError = showValidationErrors && parsedSpeed == null,
-                    onValueChange = { speedText = it },
-                    onPreset = { speedText = formatEpubTtsRate(it) }
+                    rateDescription = "text-to-speech speed",
+                    onValueChange = { speedText = it }
                 )
                 TtsRateSetting(
                     title = "Pitch",
                     value = pitchText,
-                    options = EPUB_TTS_PITCH_OPTIONS,
                     isError = showValidationErrors && parsedPitch == null,
-                    onValueChange = { pitchText = it },
-                    onPreset = { pitchText = formatEpubTtsRate(it) }
+                    rateDescription = "text-to-speech pitch",
+                    onValueChange = { pitchText = it }
                 )
                 Text("Extra punctuation pauses", style = MaterialTheme.typography.titleSmall)
                 Row(
@@ -296,39 +292,19 @@ private fun EpubTtsSettingsDialog(
 private fun TtsRateSetting(
     title: String,
     value: String,
-    options: List<Float>,
     isError: Boolean,
-    onValueChange: (String) -> Unit,
-    onPreset: (Float) -> Unit
+    rateDescription: String,
+    onValueChange: (String) -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(title, style = MaterialTheme.typography.titleSmall)
-        Row(
-            modifier = Modifier.horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            options.forEach { option ->
-                FilterChip(
-                    selected = parseEpubTtsRate(value) == option,
-                    onClick = { onPreset(option) },
-                    label = { Text("${formatEpubTtsRate(option)}×") }
-                )
-            }
-        }
-        OutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Custom ${title.lowercase()}") },
-            suffix = { Text("×") },
-            singleLine = true,
-            isError = isError,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-            supportingText = {
-                Text(if (isError) "Enter a value from 0.5 to 2" else "0.5 to 2")
-            }
-        )
-    }
+    PlaybackRateSetting(
+        title = title,
+        value = value,
+        minHundredths = EPUB_TTS_RATE_MIN_HUNDREDTHS,
+        maxHundredths = EPUB_TTS_RATE_MAX_HUNDREDTHS,
+        isError = isError,
+        rateDescription = rateDescription,
+        onValueChange = onValueChange
+    )
 }
 
 @Composable
@@ -358,9 +334,7 @@ private fun TtsPauseSetting(
 internal fun formatEpubTtsPlaybackSpeed(speed: Float): String = formatEpubTtsRate(speed)
 
 internal fun formatEpubTtsRate(value: Float): String =
-    formatPlaybackSpeed(value.toDouble())
-        .trimEnd('0')
-        .trimEnd('.')
+    formatEditablePlaybackRate(value)
 
 internal enum class EpubListenChoice {
     PUBLISHER_NARRATION,

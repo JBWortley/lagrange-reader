@@ -34,6 +34,18 @@ class AppPreferencesStoreTest {
         assertEquals(1.1f, adjustAudioPlaybackSpeed(1f, AUDIO_PLAYBACK_SPEED_COARSE_STEP_HUNDREDTHS))
         assertEquals(0.25f, adjustAudioPlaybackSpeed(0.25f, -10))
         assertEquals(3f, adjustAudioPlaybackSpeed(3f, 10))
+        assertEquals(
+            1.05f,
+            adjustPlaybackRate(
+                value = 1f,
+                deltaHundredths = PLAYBACK_RATE_FINE_STEP_HUNDREDTHS,
+                minHundredths = 50,
+                maxHundredths = 200
+            )
+        )
+        assertEquals(0.5f, parsePlaybackRate("0,50", 50, 200))
+        assertEquals(null, parsePlaybackRate("0.499", 50, 200))
+        assertEquals(null, parsePlaybackRate("2.001", 50, 200))
     }
 
     @Test

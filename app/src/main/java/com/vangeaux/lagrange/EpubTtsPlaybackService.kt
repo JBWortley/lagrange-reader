@@ -670,6 +670,11 @@ class EpubTtsPlaybackService : Service() {
                 Intent(context, EpubTtsPlaybackService::class.java).setAction(ACTION_PREPARE)
             )
         }
+
+        /** Cancels a pending foreground start even when the Activity binder is not connected yet. */
+        fun stop(context: Context) {
+            context.stopService(Intent(context, EpubTtsPlaybackService::class.java))
+        }
     }
 }
 

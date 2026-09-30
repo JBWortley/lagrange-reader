@@ -83,13 +83,11 @@ internal fun normalizeEpubTtsPauseMillis(value: Int): Int =
     value.coerceIn(EPUB_TTS_PAUSE_MIN_MILLIS, EPUB_TTS_PAUSE_MAX_MILLIS)
 
 internal fun parseEpubTtsRate(value: String): Float? {
-    val parsed = value.trim().replace(',', '.').toFloatOrNull() ?: return null
-    if (!parsed.isFinite()) return null
-    val hundredths = parsed * 100f
-    if (hundredths < EPUB_TTS_RATE_MIN_HUNDREDTHS ||
-        hundredths > EPUB_TTS_RATE_MAX_HUNDREDTHS
-    ) return null
-    return normalizeEpubTtsRate(parsed)
+    return parsePlaybackRate(
+        value = value,
+        minHundredths = EPUB_TTS_RATE_MIN_HUNDREDTHS,
+        maxHundredths = EPUB_TTS_RATE_MAX_HUNDREDTHS
+    )
 }
 
 internal fun parseEpubTtsPauseMillis(value: String): Int? =

@@ -575,6 +575,7 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
     private var tapZoneTutorialHideJob: Job? = null
     private var restoredLocator: Locator? = null
     private var readingSessionEnded = false
+    private var readerExitPlaybackClosed = false
     private var epubImageGestureJob: Job? = null
     private var epubImageViewer by mutableStateOf<Pair<Int, Bitmap>?>(null)
     private lateinit var mediaOverlayPlayback: EpubMediaOverlayPlaybackViewModel
@@ -1432,6 +1433,7 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
     private fun closeTtsPlayback() {
         pendingTtsSpec = null
         ttsServiceBinder?.stop()
+        EpubTtsPlaybackService.stop(applicationContext)
         ttsIsPlaying = false
         ttsCanGoPrevious = false
         ttsCanGoNext = false
@@ -2480,10 +2482,19 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
     }
 
     private fun finishReader() {
-        closeMediaOverlayPlayback()
+        closePlaybackForReaderExit()
         endReadingSession()
         updateResult(ReaderCompletionReason.USER_CLOSED)
         finish()
+    }
+
+    private fun closePlaybackForReaderExit() {
+        if (readerExitPlaybackClosed) return
+        readerExitPlaybackClosed = true
+        closeEpubReaderPlayback(
+            closeMediaOverlayPlayback = ::closeMediaOverlayPlayback,
+            closeTtsPlayback = ::closeTtsPlayback
+        )
     }
 
     private fun endReadingSession() {
@@ -2575,6 +2586,10 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
     }
 
     override fun onDestroy() {
+        if (isFinishing && !isChangingConfigurations) {
+            closePlaybackForReaderExit()
+            endReadingSession()
+        }
         ttsServiceStateJob?.cancel()
         ttsServiceStateJob = null
         ttsServiceConnection?.unbind()
@@ -2584,10 +2599,6 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
             mediaOverlayPlayback.player?.removeListener(listener)
         }
         mediaOverlayPlayerListener = null
-        if (isFinishing && !isChangingConfigurations) {
-            mediaOverlayPlayback.closePlayback()
-            endReadingSession()
-        }
         super.onDestroy()
         publication?.close()
         publication = null
@@ -2688,6 +2699,14 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
             )
         }
     }
+}
+
+internal fun closeEpubReaderPlayback(
+    closeMediaOverlayPlayback: () -> Unit,
+    closeTtsPlayback: () -> Unit
+) {
+    closeMediaOverlayPlayback()
+    closeTtsPlayback()
 }
 
 internal class ReadiumEpubLocatorStore(context: Context) {
