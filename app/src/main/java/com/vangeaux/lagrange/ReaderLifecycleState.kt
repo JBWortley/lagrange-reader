@@ -24,6 +24,7 @@ internal const val STATE_READER_LOCATOR = "reader_saved_locator"
 internal const val STATE_READER_CHROME_VISIBLE = "reader_chrome_visible"
 internal const val STATE_READER_OPTIONS_VISIBLE = "reader_options_visible"
 internal const val STATE_READER_TUTORIAL_SHOWN = "reader_tutorial_shown"
+internal const val STATE_EPUB_TTS_LOCATOR = "epub_tts_saved_locator"
 
 internal fun Bundle.readReaderLocator(): Locator? = getString(STATE_READER_LOCATOR)
     ?.let { saved -> runCatching { Locator.fromJSON(JSONObject(saved)) }.getOrNull() }
@@ -33,6 +34,14 @@ internal fun Bundle.putReaderLocator(locator: Locator?) {
     putString(STATE_READER_LOCATOR, locator.toJSON().toString())
 }
 
+internal fun Bundle.readEpubTtsLocator(): Locator? = getString(STATE_EPUB_TTS_LOCATOR)
+    ?.let { saved -> runCatching { Locator.fromJSON(JSONObject(saved)) }.getOrNull() }
+
+internal fun Bundle.putEpubTtsLocator(locator: Locator?) {
+    locator ?: return
+    putString(STATE_EPUB_TTS_LOCATOR, locator.toJSON().toString())
+}
+
 internal enum class ReaderRestoreAction { OPEN, REOPEN }
 
 internal fun readerRestoreAction(hasSavedInstanceState: Boolean): ReaderRestoreAction =
@@ -40,6 +49,11 @@ internal fun readerRestoreAction(hasSavedInstanceState: Boolean): ReaderRestoreA
 
 internal fun shouldPauseReadingSession(isChangingConfigurations: Boolean): Boolean =
     !isChangingConfigurations
+
+internal fun shouldPauseEpubReadingSessionOnStop(
+    isChangingConfigurations: Boolean,
+    ttsPlayingInForeground: Boolean
+): Boolean = shouldPauseReadingSession(isChangingConfigurations) && !ttsPlayingInForeground
 
 internal data class ReaderLaunchState(
     val token: String? = null,

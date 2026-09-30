@@ -48,6 +48,88 @@ class AppPreferencesStoreTest {
     }
 
     @Test
+    fun epubTtsRatesSupportPresetsCustomHundredthsAndSafeBounds() {
+        assertEquals(
+            listOf(0.5f, 0.75f, 0.9f, 0.95f, 1f, 1.05f, 1.1f, 1.25f, 1.5f, 1.75f, 2f),
+            EPUB_TTS_PLAYBACK_SPEED_OPTIONS
+        )
+        assertEquals(0.5f, normalizeEpubTtsPlaybackSpeed(0.1f))
+        assertEquals(2f, normalizeEpubTtsPlaybackSpeed(3f))
+        assertEquals(0.97f, normalizeEpubTtsPlaybackSpeed(0.97f))
+        assertEquals(1f, normalizeEpubTtsPlaybackSpeed(Float.NaN))
+        assertEquals(1.13f, normalizeEpubTtsPitch(1.126f))
+        assertEquals(0.97f, parseEpubTtsRate(" 0.97 "))
+        assertEquals(1.05f, parseEpubTtsRate("1,05"))
+        assertEquals(null, parseEpubTtsRate("0.49"))
+        assertEquals(null, parseEpubTtsRate("fast"))
+        assertEquals(0, parseEpubTtsPauseMillis("0"))
+        assertEquals(2000, parseEpubTtsPauseMillis("2000"))
+        assertEquals(null, parseEpubTtsPauseMillis("2001"))
+        assertEquals(
+            EpubTtsPauseSettings(
+                commaMillis = 0,
+                semicolonMillis = 2000,
+                colonMillis = 175,
+                emDashMillis = 200,
+                ellipsisMillis = 250,
+                parenthesesMillis = 100
+            ),
+            EpubTtsPauseSettings(commaMillis = -1, semicolonMillis = 3000).normalized()
+        )
+        assertEquals("0.5", formatEpubTtsPlaybackSpeed(0.5f))
+        assertEquals("1.05", formatEpubTtsPlaybackSpeed(1.05f))
+        assertEquals("2", formatEpubTtsPlaybackSpeed(2f))
+    }
+
+    @Test
+    fun `EPUB TTS punctuation defaults use the tested device overrides`() {
+        assertEquals(
+            EpubTtsPauseSettings(
+                enabled = true,
+                commaMillis = 0,
+                semicolonMillis = 200,
+                colonMillis = 175,
+                emDashMillis = 200,
+                ellipsisMillis = 250,
+                parenthesesMillis = 100
+            ),
+            EpubTtsPauseSettings()
+        )
+    }
+
+    @Test
+    fun epubListenChoicesOfferIndependentStartAndResumeActions() {
+        assertEquals(
+            listOf(EpubListenChoice.TTS_FROM_HERE),
+            epubListenChoices(
+                hasPublisherNarration = false,
+                hasTextToSpeech = true,
+                canKeepListening = false
+            )
+        )
+        assertEquals(
+            listOf(EpubListenChoice.TTS_FROM_HERE, EpubListenChoice.TTS_KEEP_LISTENING),
+            epubListenChoices(
+                hasPublisherNarration = false,
+                hasTextToSpeech = true,
+                canKeepListening = true
+            )
+        )
+        assertEquals(
+            listOf(
+                EpubListenChoice.PUBLISHER_NARRATION,
+                EpubListenChoice.TTS_FROM_HERE,
+                EpubListenChoice.TTS_KEEP_LISTENING
+            ),
+            epubListenChoices(
+                hasPublisherNarration = true,
+                hasTextToSpeech = true,
+                canKeepListening = true
+            )
+        )
+    }
+
+    @Test
     fun audioSkipIntervalsNormalizeToSupportedValues() {
         assertEquals(5, normalizeAudioSkipSeconds(1))
         assertEquals(10, normalizeAudioSkipSeconds(12))

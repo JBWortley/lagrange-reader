@@ -20,14 +20,21 @@ import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeNotNull
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.readium.navigator.media.tts.AndroidTtsNavigatorFactory
+import org.readium.navigator.media.tts.TtsNavigator
 import org.readium.r2.navigator.epub.EpubNavigatorFragment
 import org.readium.r2.navigator.preferences.ColumnCount
 import org.readium.r2.navigator.preferences.FontFamily
@@ -42,6 +49,38 @@ import org.readium.r2.shared.publication.services.positions
 
 @RunWith(AndroidJUnit4::class)
 class ReadiumEpubOpenInstrumentedTest {
+    @OptIn(ExperimentalReadiumApi::class)
+    @Test
+    fun readiumTtsInitializesForTextualEpubWhenDeviceHasSpeechEngine() = runBlocking {
+        val application = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val epub = File(application.cacheDir, "readium-tts-probe.epub")
+        writeMultiResourceEpub(epub)
+        val opened = openReadiumEpub(application, epub) as ReadiumEpubOpenResult.Opened
+        try {
+            val factory = AndroidTtsNavigatorFactory(application, opened.publication)
+            assertNotNull(factory)
+            val speech = withTimeout(15_000L) {
+                withContext(Dispatchers.Main.immediate) {
+                    factory?.createNavigator(
+                        listener = object : TtsNavigator.Listener {
+                            override fun onStopRequested() = Unit
+                        }
+                    )?.getOrNull()
+                }
+            }
+            // Android images are allowed to omit a TTS engine; a real device with one must
+            // initialize the navigator and expose a text locator without speaking aloud.
+            assumeNotNull(speech)
+            requireNotNull(speech).useForTest {
+                assertTrue(currentLocator.value.text.highlight.orEmpty().isNotBlank())
+            }
+            delay(500L)
+        } finally {
+            opened.publication.close()
+            epub.delete()
+        }
+    }
+
     @Test
     fun readerIntentEnablesNormalAnnotationFeaturesForItsBook() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
@@ -485,6 +524,14 @@ class ReadiumEpubOpenInstrumentedTest {
                 )
             }
         }
+    }
+
+    private inline fun <T> org.readium.navigator.media.tts.AndroidTtsNavigator.useForTest(
+        block: org.readium.navigator.media.tts.AndroidTtsNavigator.() -> T
+    ): T = try {
+        block()
+    } finally {
+        close()
     }
 
     private fun writeSvgCoverEpub(target: File) {
