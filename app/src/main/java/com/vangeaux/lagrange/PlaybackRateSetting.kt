@@ -6,8 +6,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -55,6 +58,7 @@ internal fun PlaybackRateSetting(
     maxHundredths: Int,
     isError: Boolean,
     rateDescription: String,
+    presets: List<Float> = emptyList(),
     onValueChange: (String) -> Unit
 ) {
     val parsedValue = parsePlaybackRate(value, minHundredths, maxHundredths)
@@ -68,6 +72,20 @@ internal fun PlaybackRateSetting(
             enabled = parsedValue != null,
             onValueChange = { onValueChange(formatEditablePlaybackRate(it)) }
         )
+        if (presets.isNotEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                presets.forEach { preset ->
+                    FilterChip(
+                        selected = parsedValue == preset,
+                        onClick = { onValueChange(formatEditablePlaybackRate(preset)) },
+                        label = { Text("${formatEditablePlaybackRate(preset)}\u00d7") }
+                    )
+                }
+            }
+        }
         OutlinedTextField(
             value = value,
             onValueChange = onValueChange,

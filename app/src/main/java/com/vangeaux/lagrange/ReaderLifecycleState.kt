@@ -3,8 +3,12 @@ package com.vangeaux.lagrange
 import android.os.Bundle
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.listSaver
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.withStateAtLeast
 import org.json.JSONObject
 import org.readium.r2.shared.publication.Locator
+import org.readium.r2.shared.publication.Publication
 
 enum class ReaderCompletionReason {
     USER_CLOSED,
@@ -54,6 +58,24 @@ internal fun shouldPauseEpubReadingSessionOnStop(
     isChangingConfigurations: Boolean,
     ttsPlayingInForeground: Boolean
 ): Boolean = shouldPauseReadingSession(isChangingConfigurations) && !ttsPlayingInForeground
+
+/** Owns preparation, waits out saved fragment state, and closes if attachment never completes. */
+internal suspend fun <T> LifecycleOwner.prepareAndAttachPublicationWhenResumed(
+    publication: Publication,
+    prepare: suspend () -> T,
+    attach: (T) -> Unit
+) {
+    var attached = false
+    try {
+        val prepared = prepare()
+        lifecycle.withStateAtLeast(Lifecycle.State.RESUMED) {
+            attach(prepared)
+            attached = true
+        }
+    } finally {
+        if (!attached) publication.close()
+    }
+}
 
 internal data class ReaderLaunchState(
     val token: String? = null,

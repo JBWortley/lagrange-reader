@@ -140,6 +140,28 @@ class PunctuationPausingTtsEngineTest {
         )
     }
 
+    @Test
+    fun `consecutive punctuation cannot bypass the split work limit`() {
+        val text = "word" + ":".repeat(20_000)
+
+        val chunks = epubTtsSpeechChunks(
+            text,
+            EpubTtsPauseSettings(
+                commaMillis = 1,
+                semicolonMillis = 1,
+                colonMillis = 1,
+                emDashMillis = 1,
+                ellipsisMillis = 1,
+                parenthesesMillis = 1
+            )
+        )
+
+        assertEquals(text, chunks.joinToString("") { it.text })
+        assertTrue(chunks.size <= EPUB_TTS_MAX_CHUNKS_PER_UTTERANCE)
+        assertEquals(EPUB_TTS_MAX_CHUNKS_PER_UTTERANCE - 1, chunks.sumOf { it.pauseAfterMillis })
+        assertEquals("word".length + EPUB_TTS_MAX_CHUNKS_PER_UTTERANCE - 1, chunks.first().text.length)
+    }
+
     @OptIn(ExperimentalCoroutinesApi::class, ExperimentalReadiumApi::class)
     @Test
     fun `engine waits between chunks and remaps ranges to original sentence`() = runTest {

@@ -22,17 +22,20 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.media.app.NotificationCompat as MediaNotificationCompat
 import java.io.File
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.readium.navigator.media.tts.AndroidTtsNavigator
 import org.readium.navigator.media.tts.TtsNavigator
 import org.readium.navigator.media.tts.TtsNavigatorFactory
@@ -42,7 +45,39 @@ import org.readium.r2.shared.ExperimentalReadiumApi
 import org.readium.r2.shared.publication.Locator
 import org.readium.r2.shared.publication.Publication
 
+internal object EpubTtsAccountSession {
+    private val epoch = AtomicLong(0L)
+
+    fun currentEpoch(): Long = epoch.get()
+
+    fun invalidate(): Long = epoch.incrementAndGet()
+
+    fun isCurrent(value: Long): Boolean = epoch.get() == value
+}
+
+/** Serializes competing reader starts without relying on foreground-service Intent delivery order. */
+internal object EpubTtsRequestSession {
+    private val sequence = AtomicLong(0L)
+    private val latestRequest = AtomicLong(0L)
+
+    fun begin(): Long {
+        val requestId = sequence.incrementAndGet()
+        latestRequest.updateAndGet { current -> maxOf(current, requestId) }
+        return requestId
+    }
+
+    fun cancel(requestId: Long) {
+        val cancellationId = sequence.incrementAndGet()
+        latestRequest.compareAndSet(requestId, cancellationId)
+    }
+
+    fun isCurrent(requestId: Long): Boolean = latestRequest.get() == requestId
+}
+
 internal data class EpubTtsSessionSpec(
+    val ownerToken: String,
+    val requestId: Long,
+    val accountEpoch: Long,
     val readerKey: String,
     val libraryId: String,
     val bookId: String?,
@@ -61,6 +96,7 @@ internal enum class EpubTtsFailureKind {
 }
 
 internal data class EpubTtsServiceState(
+    val ownerToken: String? = null,
     val readerKey: String? = null,
     val title: String? = null,
     val locator: Locator? = null,
@@ -70,7 +106,9 @@ internal data class EpubTtsServiceState(
     val canGoNext: Boolean = false,
     val settings: EpubTtsSettings = EpubTtsSettings(),
     val failure: EpubTtsFailureKind? = null,
-    val failureSerial: Long = 0L
+    val failureSerial: Long = 0L,
+    val completedOwnerToken: String? = null,
+    val completionSerial: Long = 0L
 ) {
     val hasSession: Boolean
         get() = readerKey != null && (isPreparing || failure == null)
@@ -96,6 +134,16 @@ internal fun epubTtsMediaPlaybackActions(state: EpubTtsServiceState): Long {
     return actions
 }
 
+internal fun epubTtsOwnerMatches(state: EpubTtsServiceState, ownerToken: String?): Boolean =
+    ownerToken == null || state.ownerToken == ownerToken
+
+internal fun epubTtsExposedTitle(state: EpubTtsServiceState): String =
+    if (state.settings.showBookTitleOnLockScreen) {
+        state.title ?: "Text to speech"
+    } else {
+        "Text to speech"
+    }
+
 /** Owns EPUB speech independently of any Activity so rotation, lock and screen-off are harmless. */
 @OptIn(ExperimentalReadiumApi::class)
 class EpubTtsPlaybackService : Service() {
@@ -106,7 +154,10 @@ class EpubTtsPlaybackService : Service() {
     private var openingJob: Job? = null
     private var playbackJob: Job? = null
     private var locationJob: Job? = null
+    private val progressJobs = java.util.Collections.synchronizedSet(mutableSetOf<Job>())
     private var activeSpec: EpubTtsSessionSpec? = null
+    private var preparedOwnerToken: String? = null
+    private var preparedRequestId: Long? = null
     private lateinit var mediaSession: MediaSessionCompat
     private var generation = 0L
     private var lastQueuedAtMillis = 0L
@@ -123,9 +174,14 @@ class EpubTtsPlaybackService : Service() {
         private val mutableState = MutableStateFlow(EpubTtsServiceState())
         val state: StateFlow<EpubTtsServiceState> = mutableState.asStateFlow()
 
-        fun open(spec: EpubTtsSessionSpec) = openSession(spec)
+        fun open(spec: EpubTtsSessionSpec): Boolean {
+            if (!isSpecCurrent(spec)) return false
+            openSession(spec)
+            return true
+        }
 
-        fun play() {
+        fun play(ownerToken: String? = null) {
+            if (!isOwner(ownerToken)) return
             val active = navigator ?: return
             active.play()
             if (navigator !== active) return
@@ -134,7 +190,8 @@ class EpubTtsPlaybackService : Service() {
             updateNotification()
         }
 
-        fun pause() {
+        fun pause(ownerToken: String? = null) {
+            if (!isOwner(ownerToken)) return
             val active = navigator ?: return
             active.pause()
             if (navigator !== active) return
@@ -143,7 +200,8 @@ class EpubTtsPlaybackService : Service() {
             updateNotification()
         }
 
-        fun previous() {
+        fun previous(ownerToken: String? = null) {
+            if (!isOwner(ownerToken)) return
             val active = navigator ?: return
             val wasPlaying = mutableState.value.isPlaying
             active.skipToPreviousUtterance()
@@ -153,7 +211,8 @@ class EpubTtsPlaybackService : Service() {
             updateNotification()
         }
 
-        fun next() {
+        fun next(ownerToken: String? = null) {
+            if (!isOwner(ownerToken)) return
             val active = navigator ?: return
             val wasPlaying = mutableState.value.isPlaying
             active.skipToNextUtterance()
@@ -163,7 +222,8 @@ class EpubTtsPlaybackService : Service() {
             updateNotification()
         }
 
-        fun setSettings(value: EpubTtsSettings) {
+        fun setSettings(value: EpubTtsSettings, ownerToken: String? = null) {
+            if (!isOwner(ownerToken)) return
             val normalized = value.normalized()
             val previous = mutableState.value.settings
             mutableState.value = mutableState.value.copy(settings = normalized)
@@ -183,7 +243,18 @@ class EpubTtsPlaybackService : Service() {
             updateNotification()
         }
 
-        fun stop() = closeSession(removeNotification = true)
+        fun stop(ownerToken: String? = null, requestId: Long? = null) {
+            if (!isOwner(ownerToken)) return
+            if (requestId != null && currentRequestId() != requestId) return
+            currentRequestId()?.let(EpubTtsRequestSession::cancel)
+            closeSession(removeNotification = true)
+        }
+
+        private fun isOwner(ownerToken: String?): Boolean =
+            ownerToken == null || mutableState.value.ownerToken == ownerToken ||
+                (mutableState.value.ownerToken == null && preparedOwnerToken == ownerToken)
+
+        private fun currentRequestId(): Long? = preparedRequestId ?: activeSpec?.requestId
 
         internal fun publish(transform: (EpubTtsServiceState) -> EpubTtsServiceState) {
             mutableState.value = transform(mutableState.value)
@@ -193,6 +264,7 @@ class EpubTtsPlaybackService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        activeInstance = this
         mediaSession = MediaSessionCompat(this, "$packageName:epub-tts").apply {
             setFlags(
                 MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS or
@@ -224,11 +296,20 @@ class EpubTtsPlaybackService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action
         when (action) {
+            ACTION_PREPARE -> prepareForeground(
+                ownerToken = intent.getStringExtra(EXTRA_OWNER_TOKEN),
+                requestId = intent.getLongExtra(EXTRA_REQUEST_ID, INVALID_REQUEST_ID),
+                accountEpoch = intent.getLongExtra(EXTRA_ACCOUNT_EPOCH, INVALID_ACCOUNT_EPOCH),
+                readerKey = intent.getStringExtra(EXTRA_READER_KEY),
+                title = intent.getStringExtra(EXTRA_TITLE),
+                startId = startId
+            )
             ACTION_PLAY -> binder.play()
             ACTION_PAUSE -> binder.pause()
             ACTION_PREVIOUS -> binder.previous()
             ACTION_NEXT -> binder.next()
             ACTION_STOP -> binder.stop()
+            ACTION_STOP_OWNER -> binder.stop(intent.getStringExtra(EXTRA_OWNER_TOKEN))
             else -> promoteToForeground("Preparing text to speech", isPlaying = false)
         }
         if (action != null && action in TRANSPORT_ACTIONS && binder.state.value.readerKey == null) {
@@ -249,12 +330,60 @@ class EpubTtsPlaybackService : Service() {
             mediaSession.release()
         }
         scope.cancel()
+        if (activeInstance === this) activeInstance = null
         super.onDestroy()
     }
 
+    private fun prepareForeground(
+        ownerToken: String?,
+        requestId: Long,
+        accountEpoch: Long,
+        readerKey: String?,
+        title: String?,
+        startId: Int
+    ) {
+        if (ownerToken.isNullOrBlank() || readerKey.isNullOrBlank() ||
+            !EpubTtsRequestSession.isCurrent(requestId) ||
+            !EpubTtsAccountSession.isCurrent(accountEpoch)
+        ) {
+            if (binder.state.value.readerKey != null) {
+                updateNotification()
+            } else {
+                promoteToForeground("Preparing text to speech", isPlaying = false)
+                ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+                stopSelf(startId)
+            }
+            return
+        }
+        val state = binder.state.value
+        if (state.ownerToken != ownerToken || state.readerKey != readerKey) {
+            closeSession(removeNotification = false, stopService = false)
+            preparedOwnerToken = ownerToken
+            preparedRequestId = requestId
+            binder.publish {
+                EpubTtsServiceState(
+                    ownerToken = ownerToken,
+                    readerKey = readerKey,
+                    title = title,
+                    isPreparing = true,
+                    settings = AppPreferencesStore(applicationContext).readEpubTtsSettings(),
+                    failureSerial = it.failureSerial,
+                    completionSerial = it.completionSerial
+                )
+            }
+        } else {
+            preparedOwnerToken = ownerToken
+            preparedRequestId = requestId
+        }
+        promoteToForeground(title ?: "Text to speech", isPlaying = false)
+    }
+
     private fun openSession(spec: EpubTtsSessionSpec) {
+        if (!isSpecCurrent(spec)) return
         val current = activeSpec
-        if (current?.readerKey == spec.readerKey && navigator != null) {
+        if (current?.requestId == spec.requestId && current.ownerToken == spec.ownerToken &&
+            current.readerKey == spec.readerKey && navigator != null
+        ) {
             activeSpec = spec
             binder.setSettings(spec.settings)
             spec.initialLocator?.let { navigator?.go(it) }
@@ -266,11 +395,14 @@ class EpubTtsPlaybackService : Service() {
         val requestGeneration = ++generation
         binder.publish {
             EpubTtsServiceState(
+                ownerToken = spec.ownerToken,
                 readerKey = spec.readerKey,
                 title = spec.title,
                 locator = spec.initialLocator,
                 isPreparing = true,
-                settings = spec.settings.normalized()
+                settings = spec.settings.normalized(),
+                failureSerial = it.failureSerial,
+                completionSerial = it.completionSerial
             )
         }
         promoteToForeground(spec.title, isPlaying = false)
@@ -282,8 +414,9 @@ class EpubTtsPlaybackService : Service() {
                     return@launch
                 }
             }
-            if (requestGeneration != generation) {
+            if (!isSessionCurrent(spec, requestGeneration)) {
                 opened.close()
+                closeStaleSession(spec)
                 return@launch
             }
             val factory = TtsNavigatorFactory(
@@ -311,10 +444,14 @@ class EpubTtsPlaybackService : Service() {
                 )
             )
             val created = result.getOrNull()
-            if (created == null || requestGeneration != generation) {
+            if (created == null || !isSessionCurrent(spec, requestGeneration)) {
                 created?.close()
                 opened.close()
-                failSession(requestGeneration, EpubTtsFailureKind.GENERIC)
+                if (created == null && isSessionCurrent(spec, requestGeneration)) {
+                    failSession(requestGeneration, EpubTtsFailureKind.GENERIC)
+                } else {
+                    closeStaleSession(spec)
+                }
                 return@launch
             }
             publication = opened
@@ -328,7 +465,7 @@ class EpubTtsPlaybackService : Service() {
             }
             observe(created, opened, spec, requestGeneration)
             publishNavigatorCapabilities()
-            if (spec.playWhenReady) created.play()
+            if (spec.playWhenReady) binder.play(spec.ownerToken)
             updateNotification()
         }
     }
@@ -344,6 +481,10 @@ class EpubTtsPlaybackService : Service() {
         playbackJob = scope.launch {
             active.playback.collect { playback ->
                 if (navigator !== active || generation != requestGeneration) return@collect
+                if (!isSpecCurrent(spec)) {
+                    closeStaleSession(spec)
+                    return@collect
+                }
                 val state = playback.state as? TtsNavigator.State
                 when (state) {
                     is TtsNavigator.State.Failure -> {
@@ -358,7 +499,10 @@ class EpubTtsPlaybackService : Service() {
                     }
                     TtsNavigator.State.Ended -> {
                         ReadiumEpubTtsPositionStore(applicationContext).remove(spec.readerKey)
-                        closeSession(removeNotification = true)
+                        closeSession(
+                            removeNotification = true,
+                            completedOwnerToken = spec.ownerToken
+                        )
                     }
                     TtsNavigator.State.Ready, null -> {
                         binder.publish { it.copy(isPlaying = playback.playWhenReady) }
@@ -375,6 +519,10 @@ class EpubTtsPlaybackService : Service() {
                 .distinctUntilChanged()
                 .collect { locator ->
                     if (navigator !== active || generation != requestGeneration) return@collect
+                    if (!isSpecCurrent(spec)) {
+                        closeStaleSession(spec)
+                        return@collect
+                    }
                     ReadiumEpubTtsPositionStore(applicationContext).save(spec.readerKey, locator)
                     ReadiumEpubLocatorStore(applicationContext).save(spec.readerKey, locator)
                     if (binder.state.value.isPlaying) updatePlaybackWakeLock(isPlaying = true)
@@ -390,6 +538,7 @@ class EpubTtsPlaybackService : Service() {
         openedPublication: Publication,
         locator: Locator
     ) {
+        if (!isSpecCurrent(spec)) return
         val currentBookId = spec.bookId?.takeIf { it.isNotBlank() } ?: return
         val currentFileId = spec.fileId?.takeIf { it.isNotBlank() } ?: return
         val chapter = openedPublication.readingOrder.indexOfFirst { link ->
@@ -415,7 +564,8 @@ class EpubTtsPlaybackService : Service() {
         lastQueuedAtMillis = now
         lastQueuedPercent = percent
         lastQueuedChapter = chapter
-        scope.launch(Dispatchers.IO) {
+        val job = scope.launch(Dispatchers.IO) {
+            if (!isSpecCurrent(spec)) return@launch
             BookOrbitRepository(applicationContext).queueProgress(
                 book = BookSummary(
                     libraryId = spec.libraryId,
@@ -431,6 +581,8 @@ class EpubTtsPlaybackService : Service() {
                 progressPercent = percent
             )
         }
+        progressJobs += job
+        job.invokeOnCompletion { progressJobs -= job }
     }
 
     private fun failSession(requestGeneration: Long, kind: EpubTtsFailureKind) {
@@ -469,7 +621,25 @@ class EpubTtsPlaybackService : Service() {
         }
     }
 
-    private fun closeSession(removeNotification: Boolean, stopService: Boolean = true) {
+    private fun isSpecCurrent(spec: EpubTtsSessionSpec): Boolean =
+        EpubTtsAccountSession.isCurrent(spec.accountEpoch) &&
+            EpubTtsRequestSession.isCurrent(spec.requestId)
+
+    private fun isSessionCurrent(spec: EpubTtsSessionSpec, requestGeneration: Long): Boolean =
+        generation == requestGeneration && activeSpec?.requestId == spec.requestId &&
+            isSpecCurrent(spec)
+
+    private fun closeStaleSession(spec: EpubTtsSessionSpec) {
+        if (activeSpec?.requestId == spec.requestId || preparedRequestId == spec.requestId) {
+            closeSession(removeNotification = true)
+        }
+    }
+
+    private fun closeSession(
+        removeNotification: Boolean,
+        stopService: Boolean = true,
+        completedOwnerToken: String? = null
+    ) {
         generation += 1
         openingJob?.cancel()
         openingJob = null
@@ -477,6 +647,8 @@ class EpubTtsPlaybackService : Service() {
         playbackJob = null
         locationJob?.cancel()
         locationJob = null
+        val pendingProgress = synchronized(progressJobs) { progressJobs.toList() }
+        pendingProgress.forEach(Job::cancel)
         val closingNavigator = navigator
         navigator = null
         closingNavigator?.close()
@@ -484,10 +656,22 @@ class EpubTtsPlaybackService : Service() {
         publication?.close()
         publication = null
         activeSpec = null
+        preparedOwnerToken = null
+        preparedRequestId = null
         lastQueuedAtMillis = 0L
         lastQueuedPercent = null
         lastQueuedChapter = -1
-        binder.publish { EpubTtsServiceState(failureSerial = it.failureSerial) }
+        binder.publish {
+            EpubTtsServiceState(
+                failureSerial = it.failureSerial,
+                completedOwnerToken = completedOwnerToken,
+                completionSerial = if (completedOwnerToken != null) {
+                    it.completionSerial + 1
+                } else {
+                    it.completionSerial
+                }
+            )
+        }
         if (removeNotification) {
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         }
@@ -525,12 +709,13 @@ class EpubTtsPlaybackService : Service() {
             }
             .build()
         mediaSession.setPlaybackState(playbackState)
+        val exposedTitle = epubTtsExposedTitle(state)
         mediaSession.setMetadata(
             state.readerKey?.let {
                 MediaMetadataCompat.Builder()
                     .putString(
                         MediaMetadataCompat.METADATA_KEY_TITLE,
-                        state.title ?: "Text to speech"
+                        exposedTitle
                     )
                     .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, "EPUB text to speech")
                     .build()
@@ -552,12 +737,14 @@ class EpubTtsPlaybackService : Service() {
 
     private fun promoteToForeground(title: String, isPlaying: Boolean) {
         val state = binder.state.value
+        val exposeTitle = state.settings.showBookTitleOnLockScreen
+        val notificationTitle = if (exposeTitle) title else epubTtsExposedTitle(state)
         val stopIntent = serviceAction(ACTION_STOP, 4)
         val compactActionIndices = mutableListOf<Int>()
         var actionIndex = 0
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
-            .setContentTitle(title)
+            .setContentTitle(notificationTitle)
             .setContentText(
                 when {
                     state.failure != null -> "Text to speech needs attention"
@@ -568,7 +755,10 @@ class EpubTtsPlaybackService : Service() {
             )
             .setContentIntent(appLaunchIntent())
             .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setVisibility(
+                if (exposeTitle) NotificationCompat.VISIBILITY_PUBLIC
+                else NotificationCompat.VISIBILITY_PRIVATE
+            )
             .setOnlyAlertOnce(true)
             .setOngoing(isPlaying || state.isPreparing)
             .setDeleteIntent(stopIntent)
@@ -656,6 +846,16 @@ class EpubTtsPlaybackService : Service() {
         private const val ACTION_PREVIOUS = "com.vangeaux.lagrange.tts.PREVIOUS"
         private const val ACTION_NEXT = "com.vangeaux.lagrange.tts.NEXT"
         private const val ACTION_STOP = "com.vangeaux.lagrange.tts.STOP"
+        private const val ACTION_STOP_OWNER = "com.vangeaux.lagrange.tts.STOP_OWNER"
+        private const val EXTRA_OWNER_TOKEN = "epub_tts_owner_token"
+        private const val EXTRA_REQUEST_ID = "epub_tts_request_id"
+        private const val EXTRA_ACCOUNT_EPOCH = "epub_tts_account_epoch"
+        private const val EXTRA_READER_KEY = "epub_tts_reader_key"
+        private const val EXTRA_TITLE = "epub_tts_title"
+        private const val INVALID_REQUEST_ID = Long.MIN_VALUE
+        private const val INVALID_ACCOUNT_EPOCH = Long.MIN_VALUE
+        @Volatile
+        private var activeInstance: EpubTtsPlaybackService? = null
         private val TRANSPORT_ACTIONS = setOf(
             ACTION_PLAY,
             ACTION_PAUSE,
@@ -664,16 +864,51 @@ class EpubTtsPlaybackService : Service() {
             ACTION_STOP
         )
 
-        fun start(context: Context) {
+        fun start(
+            context: Context,
+            ownerToken: String,
+            requestId: Long,
+            accountEpoch: Long,
+            readerKey: String,
+            title: String
+        ) {
             ContextCompat.startForegroundService(
                 context,
-                Intent(context, EpubTtsPlaybackService::class.java).setAction(ACTION_PREPARE)
+                Intent(context, EpubTtsPlaybackService::class.java)
+                    .setAction(ACTION_PREPARE)
+                    .putExtra(EXTRA_OWNER_TOKEN, ownerToken)
+                    .putExtra(EXTRA_REQUEST_ID, requestId)
+                    .putExtra(EXTRA_ACCOUNT_EPOCH, accountEpoch)
+                    .putExtra(EXTRA_READER_KEY, readerKey)
+                    .putExtra(EXTRA_TITLE, title)
             )
         }
 
         /** Cancels a pending foreground start even when the Activity binder is not connected yet. */
-        fun stop(context: Context) {
-            context.stopService(Intent(context, EpubTtsPlaybackService::class.java))
+        fun stop(context: Context, ownerToken: String, requestId: Long? = null) {
+            val service = activeInstance
+            if (service != null) {
+                service.binder.stop(ownerToken, requestId)
+            } else if (requestId == null) {
+                context.stopService(Intent(context, EpubTtsPlaybackService::class.java))
+            }
+        }
+
+        suspend fun stopAndAwait(context: Context) {
+            val jobs = withContext(Dispatchers.Main.immediate) {
+                val service = activeInstance
+                if (service == null) {
+                    context.stopService(Intent(context, EpubTtsPlaybackService::class.java))
+                    emptyList()
+                } else {
+                    val pending = synchronized(service.progressJobs) {
+                        service.progressJobs.toList()
+                    }
+                    service.closeSession(removeNotification = true)
+                    pending
+                }
+            }
+            jobs.joinAll()
         }
     }
 }

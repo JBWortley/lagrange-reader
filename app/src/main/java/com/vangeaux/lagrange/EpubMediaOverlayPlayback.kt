@@ -374,6 +374,7 @@ private fun EpubMediaOverlaySettingsDialog(
                 maxHundredths = AUDIO_PLAYBACK_SPEED_MAX_HUNDREDTHS,
                 isError = showValidationError && parsedSpeed == null,
                 rateDescription = "read-along speed",
+                presets = EPUB_TTS_PLAYBACK_SPEED_OPTIONS,
                 onValueChange = { speedText = it }
             )
         },

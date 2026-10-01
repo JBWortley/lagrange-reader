@@ -61,5 +61,50 @@ class EpubTtsPlaybackServiceTest {
         assertEquals(PlaybackStateCompat.ACTION_STOP, epubTtsMediaPlaybackActions(failed))
     }
 
+    @Test
+    fun `reader commands are scoped to their owning reader session`() {
+        val state = EpubTtsServiceState(ownerToken = "new-reader", readerKey = "book")
+
+        assertTrue(epubTtsOwnerMatches(state, "new-reader"))
+        assertFalse(epubTtsOwnerMatches(state, "old-reader"))
+        assertTrue(epubTtsOwnerMatches(state, null))
+    }
+
+    @Test
+    fun `lock screen title setting hides book metadata`() {
+        val visible = EpubTtsServiceState(title = "Private book")
+        val hidden = visible.copy(
+            settings = visible.settings.copy(showBookTitleOnLockScreen = false)
+        )
+
+        assertEquals("Private book", epubTtsExposedTitle(visible))
+        assertEquals("Text to speech", epubTtsExposedTitle(hidden))
+    }
+
+    @Test
+    fun `new start and cancellation invalidate every older start request`() {
+        val first = EpubTtsRequestSession.begin()
+        val second = EpubTtsRequestSession.begin()
+
+        assertFalse(EpubTtsRequestSession.isCurrent(first))
+        assertTrue(EpubTtsRequestSession.isCurrent(second))
+
+        EpubTtsRequestSession.cancel(first)
+        assertTrue(EpubTtsRequestSession.isCurrent(second))
+
+        EpubTtsRequestSession.cancel(second)
+        assertFalse(EpubTtsRequestSession.isCurrent(second))
+    }
+
+    @Test
+    fun `account epoch captured before suspension becomes stale after logout`() {
+        val beforeLogout = EpubTtsAccountSession.currentEpoch()
+
+        EpubTtsAccountSession.invalidate()
+
+        assertFalse(EpubTtsAccountSession.isCurrent(beforeLogout))
+        assertTrue(EpubTtsAccountSession.isCurrent(EpubTtsAccountSession.currentEpoch()))
+    }
+
     private infix fun Long.hasAction(action: Long): Boolean = this and action != 0L
 }

@@ -46,8 +46,9 @@ internal fun epubTtsSpeechChunks(
     val chunks = mutableListOf<EpubTtsSpeechChunk>()
     var start = 0
     var totalPauseMillis = 0
+    var splitEvents = 0
     text.forEachIndexed { index, character ->
-        if (chunks.size >= EPUB_TTS_MAX_CHUNKS_PER_UTTERANCE - 1) return@forEachIndexed
+        if (splitEvents >= EPUB_TTS_MAX_CHUNKS_PER_UTTERANCE - 1) return@forEachIndexed
         val requestedPause = when {
             character == ',' && isWhitespaceFollowedComma(text, index) -> normalized.commaMillis
             character == ';' -> normalized.semicolonMillis
@@ -61,6 +62,7 @@ internal fun epubTtsSpeechChunks(
             EPUB_TTS_MAX_TOTAL_PAUSE_MILLIS_PER_UTTERANCE - totalPauseMillis
         )
         if (pause <= 0) return@forEachIndexed
+        splitEvents += 1
 
         val candidate = text.substring(start, index + 1)
         // Do not ask an Android engine to synthesize an isolated punctuation mark. If this mark

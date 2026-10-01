@@ -125,6 +125,9 @@ private fun EpubTtsSettingsDialog(
     var customPausesEnabled by remember(normalized) {
         mutableStateOf(normalized.pauses.enabled)
     }
+    var showBookTitleOnLockScreen by remember(normalized) {
+        mutableStateOf(normalized.showBookTitleOnLockScreen)
+    }
     var commaText by remember(normalized) {
         mutableStateOf(normalized.pauses.commaMillis.toString())
     }
@@ -168,6 +171,7 @@ private fun EpubTtsSettingsDialog(
                 TtsRateSetting(
                     title = "Speed",
                     value = speedText,
+                    presets = EPUB_TTS_PLAYBACK_SPEED_OPTIONS,
                     isError = showValidationErrors && parsedSpeed == null,
                     rateDescription = "text-to-speech speed",
                     onValueChange = { speedText = it }
@@ -175,6 +179,7 @@ private fun EpubTtsSettingsDialog(
                 TtsRateSetting(
                     title = "Pitch",
                     value = pitchText,
+                    presets = EPUB_TTS_PITCH_OPTIONS,
                     isError = showValidationErrors && parsedPitch == null,
                     rateDescription = "text-to-speech pitch",
                     onValueChange = { pitchText = it }
@@ -245,6 +250,21 @@ private fun EpubTtsSettingsDialog(
                     enabled = customPausesEnabled,
                     onValueChange = { parenthesesText = it }
                 )
+                Text("Lock-screen privacy", style = MaterialTheme.typography.titleSmall)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Show book title on lock screen",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Switch(
+                        checked = showBookTitleOnLockScreen,
+                        onCheckedChange = { showBookTitleOnLockScreen = it }
+                    )
+                }
             }
         },
         confirmButton = {
@@ -274,7 +294,8 @@ private fun EpubTtsSettingsDialog(
                                         ?: normalized.pauses.ellipsisMillis,
                                     parenthesesMillis = parsedParentheses
                                         ?: normalized.pauses.parenthesesMillis
-                                )
+                                ),
+                                showBookTitleOnLockScreen = showBookTitleOnLockScreen
                             )
                         )
                         onDismiss()
@@ -292,6 +313,7 @@ private fun EpubTtsSettingsDialog(
 private fun TtsRateSetting(
     title: String,
     value: String,
+    presets: List<Float>,
     isError: Boolean,
     rateDescription: String,
     onValueChange: (String) -> Unit
@@ -303,6 +325,7 @@ private fun TtsRateSetting(
         maxHundredths = EPUB_TTS_RATE_MAX_HUNDREDTHS,
         isError = isError,
         rateDescription = rateDescription,
+        presets = presets,
         onValueChange = onValueChange
     )
 }

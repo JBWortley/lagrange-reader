@@ -239,6 +239,10 @@ internal class AppPreferencesStore(context: Context) {
                 EPUB_TTS_PARENTHESES_PAUSE_MILLIS_KEY,
                 EpubTtsPauseSettings().parenthesesMillis
             )
+        ),
+        showBookTitleOnLockScreen = preferences.getBoolean(
+            EPUB_TTS_SHOW_BOOK_TITLE_ON_LOCK_SCREEN_KEY,
+            true
         )
     ).normalized()
 
@@ -256,6 +260,10 @@ internal class AppPreferencesStore(context: Context) {
             .putInt(
                 EPUB_TTS_PARENTHESES_PAUSE_MILLIS_KEY,
                 normalized.pauses.parenthesesMillis
+            )
+            .putBoolean(
+                EPUB_TTS_SHOW_BOOK_TITLE_ON_LOCK_SCREEN_KEY,
+                normalized.showBookTitleOnLockScreen
             )
             .apply()
     }
@@ -322,6 +330,8 @@ internal class AppPreferencesStore(context: Context) {
         const val EPUB_TTS_ELLIPSIS_PAUSE_MILLIS_KEY = "epub_tts_ellipsis_pause_millis"
         const val EPUB_TTS_PARENTHESES_PAUSE_MILLIS_KEY =
             "epub_tts_parentheses_pause_millis"
+        const val EPUB_TTS_SHOW_BOOK_TITLE_ON_LOCK_SCREEN_KEY =
+            "epub_tts_show_book_title_on_lock_screen"
         const val AUDIO_SKIP_BACK_SECONDS_KEY = "audio_skip_back_seconds"
         const val AUDIO_SKIP_FORWARD_SECONDS_KEY = "audio_skip_forward_seconds"
         const val DEFAULT_AUDIO_SKIP_SECONDS = 10

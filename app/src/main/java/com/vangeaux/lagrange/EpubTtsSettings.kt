@@ -58,7 +58,8 @@ internal data class EpubTtsPauseSettings(
 internal data class EpubTtsSettings(
     val speed: Float = 1f,
     val pitch: Float = 1f,
-    val pauses: EpubTtsPauseSettings = EpubTtsPauseSettings()
+    val pauses: EpubTtsPauseSettings = EpubTtsPauseSettings(),
+    val showBookTitleOnLockScreen: Boolean = true
 ) {
     fun normalized(): EpubTtsSettings = copy(
         speed = normalizeEpubTtsPlaybackSpeed(speed),
