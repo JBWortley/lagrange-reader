@@ -103,14 +103,18 @@ class KomgaRepository(context: Context) : BookOrbitDataSource, ProfileSessionAwa
     }
 
     override suspend fun clearServer() {
+        val profileId = ServerProfileStore(appContext).activeId()
         preferences.edit().remove(SERVER_URL_KEY).remove(SELECTED_LIBRARY_KEY).apply()
         authModule.clearRuntimeSession()
+        profileId?.let { AuthenticatedAccountScopeStore(appContext).deactivate(it) }
     }
 
     override suspend fun clearSession() {
+        val profileId = ServerProfileStore(appContext).activeId()
         // Per-book languages are kept per profile across profile switches; sign-out forgets them.
         EpubBookLanguageStore(appContext).clearProfile()
         authModule.clearSession()
+        profileId?.let { AuthenticatedAccountScopeStore(appContext).deactivate(it) }
     }
 
     internal suspend fun streamingRequestHeaders(url: String): Map<String, String> {

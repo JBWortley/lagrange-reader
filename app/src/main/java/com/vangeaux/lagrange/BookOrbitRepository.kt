@@ -545,6 +545,19 @@ internal fun interruptedDownloadRecord(attempt: DownloadAttempt): DownloadRecord
     hasExistingLocalCopy = attempt.existingLocalPath?.let(::File)?.exists() == true
 )
 
+internal fun bookOrbitAuthenticatedPrincipal(payload: String): AuthenticatedAccountPrincipal? =
+    authenticatedAccountPrincipal(
+        payload = payload,
+        stableFields = listOf("id", "_id", "userId", "sub"),
+        candidatePaths = listOf(
+            emptyList(),
+            listOf("data"),
+            listOf("user"),
+            listOf("data", "user"),
+            listOf("result")
+        )
+    )
+
 class BookOrbitRepository(private val context: Context) : BookOrbitDataSource, ProfileSessionAware {
     /**
      * Feature modules are composed around the existing BookOrbit implementation.
@@ -772,6 +785,7 @@ class BookOrbitRepository(private val context: Context) : BookOrbitDataSource, P
 
     override suspend fun clearServer() {
         lastHomeShelfPreferences = null
+        val profileId = currentProfileId()
         // Covers stay on disk: they are scoped by server, profile and account, so switching
         // profiles (which goes through here) keeps each profile's covers for offline use.
         mutateCatalogImageSession {
@@ -787,10 +801,13 @@ class BookOrbitRepository(private val context: Context) : BookOrbitDataSource, P
             bookDetailCacheStore.clear()
             clearRuntimeSession()
         }
+        profileId?.let { AuthenticatedAccountScopeStore(context).deactivate(it) }
     }
 
     override suspend fun beginInteractiveSignIn() {
         lastHomeShelfPreferences = null
+        val profileId = currentProfileId()
+        profileId?.let { AuthenticatedAccountScopeStore(context).deactivate(it) }
         // The server sign-in page may sign in a different account than the last one on this
         // profile; forget the cover-cache account so it starts fresh on first authenticated use.
         mutateCatalogImageSession {
@@ -803,24 +820,28 @@ class BookOrbitRepository(private val context: Context) : BookOrbitDataSource, P
     override suspend fun completeInteractiveSignIn() {
         // The next cover request creates a fresh scope with the new account's credentials.
         mutateCatalogImageSession { CatalogImageCoordinator.interactiveSignInProfileKey = null }
+        rememberAuthenticatedAccount()
     }
 
     override suspend fun cancelInteractiveSignIn() {
         // Nobody new signed in. The account scope was already cleared, so whoever is signed in
         // now starts a fresh scope and cannot see covers cached for a previous account.
         mutateCatalogImageSession { CatalogImageCoordinator.interactiveSignInProfileKey = null }
+        rememberAuthenticatedAccount()
     }
 
     override suspend fun clearSession() {
         lastHomeShelfPreferences = null
+        val profileId = currentProfileId()
         mutateCatalogImageSession(clearDiskCacheAfter = true) {
             catalogImageAccountScopeStore.clear(currentProfileId() ?: getServerUrl().orEmpty())
             CatalogImageCoordinator.interactiveSignInProfileKey = null
             // Per-book languages are kept per profile across profile switches; sign-out forgets them.
             EpubBookLanguageStore(context).clearProfile()
             clearRuntimeSession()
-            currentProfileId()?.let(profileSessionStore::clear)
+            profileId?.let(profileSessionStore::clear)
         }
+        profileId?.let { AuthenticatedAccountScopeStore(context).deactivate(it) }
     }
 
     private suspend fun clearRuntimeSession() {
@@ -844,9 +865,6 @@ class BookOrbitRepository(private val context: Context) : BookOrbitDataSource, P
             prefs.remove(Keys.SELECTED_LIBRARY_ID)
         }
         activeReaderStore.clear()
-        epubReaderPositionStore.clear()
-        ReadiumEpubLocatorStore(context).clear()
-        ReadiumEpubTtsPositionStore(context).clear()
         clearCookies()
     }
 
@@ -928,7 +946,11 @@ class BookOrbitRepository(private val context: Context) : BookOrbitDataSource, P
 
     override suspend fun getSessionState(): SessionState = withContext(Dispatchers.IO) {
         runCatching {
-            request("/api/v1/auth/me", "GET", null)
+            val payload = request("/api/v1/auth/me", "GET", null)
+            val profileId = currentProfileId() ?: return@runCatching SessionState.Unavailable
+            val principal = bookOrbitAuthenticatedPrincipal(payload)
+                ?: return@runCatching SessionState.Unavailable
+            persistAuthenticatedAccount(profileId, principal)
             SessionState.Authenticated
         }.getOrElse { error ->
             when (error) {
@@ -956,6 +978,9 @@ class BookOrbitRepository(private val context: Context) : BookOrbitDataSource, P
                 catalogImageUserAccountScope(serverUrl, username)
             )
             CatalogImageCoordinator.interactiveSignInProfileKey = null
+        }
+        if (!rememberAuthenticatedAccount()) {
+            currentProfileId()?.let { AuthenticatedAccountScopeStore(context).deactivate(it) }
         }
     }
 
@@ -1008,6 +1033,32 @@ class BookOrbitRepository(private val context: Context) : BookOrbitDataSource, P
             )
             CatalogImageCoordinator.interactiveSignInProfileKey = null
         }
+        if (!rememberAuthenticatedAccount()) {
+            throw BookOrbitOidcException(
+                "Sign-in succeeded, but the server did not provide a stable account identity."
+            )
+        }
+    }
+
+    private suspend fun rememberAuthenticatedAccount(): Boolean {
+        val profileId = currentProfileId() ?: return false
+        val payload = runCatching { request("/api/v1/auth/me", "GET", null) }.getOrNull()
+            ?: return false
+        val principal = bookOrbitAuthenticatedPrincipal(payload) ?: return false
+        persistAuthenticatedAccount(profileId, principal)
+        return true
+    }
+
+    private fun persistAuthenticatedAccount(
+        profileId: String,
+        principal: AuthenticatedAccountPrincipal
+    ) {
+        AuthenticatedAccountScopeStore(context).writeAuthoritative(
+            profileId = profileId,
+            providerId = PROVIDER_BOOKORBIT,
+            principal = principal.canonical,
+            equivalentPrincipals = principal.provenAliases
+        )
     }
 
     override suspend fun loadAchievements(): AchievementCatalogue = withContext(Dispatchers.IO) {
@@ -2336,7 +2387,9 @@ class BookOrbitRepository(private val context: Context) : BookOrbitDataSource, P
         }
 
         epubReaderPositionStore.removeForBook(serverUrl, book.id)
-        activeReaderStore.clearIfMatches(serverUrl, book.id)
+        resolveEpubReaderScope(context, serverUrl)?.let { scope ->
+            activeReaderStore.clearIfMatches(scope, book.id)
+        }
         bookDetailCacheStore.remove(serverUrl, book.id, book.fileId)
         libraryCatalogStore.resetBookReadingState(serverUrl, book.id)
         browserSnapshotStore.resetBookReadingState(serverUrl, book.id)
@@ -2501,6 +2554,7 @@ class BookOrbitRepository(private val context: Context) : BookOrbitDataSource, P
             pageIndex = restoredProgress.pageIndex,
             readerPageIndex = savedBook.readerPageIndex ?: 0,
             progressPercent = restoredProgress.progressPercent,
+            initialLocatorJson = bookForRestore.readerLocatorJson,
             launchMode = session.launchMode,
             audioFiles = audioFiles,
             audioTotalDurationMs = audioTotalDurationMs
@@ -2514,7 +2568,13 @@ class BookOrbitRepository(private val context: Context) : BookOrbitDataSource, P
         val target = existingRecord
             ?.localPath
             ?.let(::File)
-            ?: downloadStore.downloadTarget(fileId, book.title, book.mediaKind, book.format)
+            ?: downloadStore.downloadTarget(
+                serverUrl,
+                fileId,
+                book.title,
+                book.mediaKind,
+                book.format
+            )
         val hadUsableExisting = existingRecord != null &&
             downloadedFilePassesIntegrity(book, target)
         downloadStore.saveAttempt(
