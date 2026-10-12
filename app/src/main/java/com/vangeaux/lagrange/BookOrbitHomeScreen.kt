@@ -6138,7 +6138,7 @@ internal fun homeSectionLibraryIds(
 }
 
 @Composable
-private fun HomeSectionScreen(
+internal fun HomeSectionScreen(
     section: HomeSection,
     books: List<BookSummary>,
     state: BrowserState,
@@ -6179,7 +6179,7 @@ private fun HomeSectionScreen(
             HomeSection.RECENTLY_UPDATED_SERIES -> emptyList()
         }
     }
-    var sectionBooks by remember(books, section) { mutableStateOf(localSectionBooks) }
+    var sectionBooks by remember(localSectionBooks, section) { mutableStateOf(localSectionBooks) }
     var nextPage by remember(books, section) { mutableStateOf(1) }
     var canLoadMore by remember(books, section) { mutableStateOf(false) }
     val loadMoreScope = rememberCoroutineScope()
