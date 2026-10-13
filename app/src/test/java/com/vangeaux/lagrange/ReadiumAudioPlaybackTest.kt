@@ -301,6 +301,44 @@ class ReadiumAudioPlaybackTest {
     }
 
     @Test
+    fun activeBookSummaryForActiveFileAdvancesAssetIdentityToTheActiveTrack() {
+        val bookLevel = BookSummary(
+            libraryId = "lib",
+            id = "book-1",
+            fileId = "f1",
+            title = "The Truth",
+            author = "Terry Pratchett",
+            format = "mp3",
+            mediaKind = MediaKind.AUDIO,
+            streamUrl = "https://server/stream/f1",
+            audioAssetId = "aud_track_1",
+            audioManifestRevision = "manifest-rev-1"
+        )
+        val files = listOf(
+            fileWithAsset("f1", "aud_track_1"),
+            fileWithAsset("f2", "aud_track_2")
+        )
+
+        val active = activeBookSummaryForActiveFile(bookLevel, files, "f2")
+
+        assertEquals("f2", active.fileId)
+        assertEquals("aud_track_2", active.audioAssetId)
+        assertEquals("manifest-rev-1", active.audioManifestRevision)
+    }
+
+    private fun fileWithAsset(id: String, assetId: String): BookFileOption {
+        val base = file(id, "https://server/stream/$id")
+        return base.copy(
+            audioAssetId = assetId,
+            audioManifestRevision = "manifest-rev-1",
+            book = base.book.copy(
+                audioAssetId = assetId,
+                audioManifestRevision = "manifest-rev-1"
+            )
+        )
+    }
+
+    @Test
     fun activeBookSummaryForActiveFileFallsBackToBookWhenFileIdUnknown() {
         val bookLevel = file("f1", "https://server/stream/f1").book
         val files = listOf(file("f1", "https://server/stream/f1"))

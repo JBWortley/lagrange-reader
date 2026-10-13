@@ -535,7 +535,9 @@ internal fun activeBookSummaryForActiveFile(
         streamUrl = activeFile.book.streamUrl,
         downloadUrl = activeFile.book.downloadUrl,
         format = activeFile.book.format,
-        localPath = activeFile.book.localPath
+        localPath = activeFile.book.localPath,
+        audioAssetId = activeFile.book.audioAssetId,
+        audioManifestRevision = activeFile.book.audioManifestRevision
     )
 }
 
