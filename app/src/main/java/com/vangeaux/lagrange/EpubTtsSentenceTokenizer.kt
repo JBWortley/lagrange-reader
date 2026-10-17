@@ -16,16 +16,21 @@ import org.readium.r2.shared.util.tokenizer.Tokenizer
  */
 internal class EpubTtsSentenceTokenizer(
     language: Language?,
-    private val delegate: Tokenizer<String, IntRange> =
-        DefaultTextContentTokenizer(TextUnit.Sentence, language)
+    delegate: Tokenizer<String, IntRange>? = null,
+    fallbackLanguage: Language? = null
 ) : Tokenizer<String, IntRange> {
-    private val applyEnglishRules = isEnglishLanguage(language)
+    private val effectiveLanguage = normalizeEpubTtsSentenceLanguage(language ?: fallbackLanguage)
+    private val delegate = delegate ?: DefaultTextContentTokenizer(TextUnit.Sentence, effectiveLanguage)
+    private val applyEnglishRules = isEnglishLanguage(effectiveLanguage)
 
     override fun tokenize(data: String): List<IntRange> {
         val ranges = delegate.tokenize(data)
         return if (applyEnglishRules) mergeEpubTtsSentenceRanges(data, ranges) else ranges
     }
 }
+
+internal fun normalizeEpubTtsSentenceLanguage(language: Language?): Language? =
+    if (language?.code.equals("english", ignoreCase = true)) Language("en") else language
 
 private fun isEnglishLanguage(language: Language?): Boolean {
     val primary = language?.code

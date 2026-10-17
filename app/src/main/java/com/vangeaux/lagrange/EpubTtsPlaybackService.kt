@@ -497,7 +497,12 @@ class EpubTtsPlaybackService : Service() {
                 ttsEngineProvider = PunctuationPausingTtsEngineProvider(
                     applicationContext
                 ) { binder.state.value.settings.pauses },
-                tokenizerFactory = ::EpubTtsSentenceTokenizer
+                tokenizerFactory = { language ->
+                    EpubTtsSentenceTokenizer(
+                        language = language,
+                        fallbackLanguage = opened.metadata.language
+                    )
+                }
             )
             if (factory == null) {
                 opened.close()
