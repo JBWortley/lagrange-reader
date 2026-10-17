@@ -496,7 +496,8 @@ class EpubTtsPlaybackService : Service() {
                 publication = opened,
                 ttsEngineProvider = PunctuationPausingTtsEngineProvider(
                     applicationContext
-                ) { binder.state.value.settings.pauses }
+                ) { binder.state.value.settings.pauses },
+                tokenizerFactory = ::EpubTtsSentenceTokenizer
             )
             if (factory == null) {
                 opened.close()
