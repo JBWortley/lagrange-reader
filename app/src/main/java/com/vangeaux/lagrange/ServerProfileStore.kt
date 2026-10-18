@@ -16,6 +16,16 @@ data class ServerProfile(
 
 const val PROVIDER_BOOKORBIT = "bookorbit"
 const val PROVIDER_KOMGA = "komga"
+const val PROVIDER_KAVITA = "kavita"
+
+fun serverProviderDisplayName(providerId: String): String = when (providerId) {
+    PROVIDER_KOMGA -> "Komga"
+    PROVIDER_KAVITA -> "Kavita"
+    PROVIDER_BOOKORBIT -> "BookOrbit"
+    else -> "server"
+}
+
+fun providerServerLabel(providerId: String): String = "${serverProviderDisplayName(providerId)} server"
 
 class ServerProfileStore(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)

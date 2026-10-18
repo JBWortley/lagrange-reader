@@ -81,7 +81,7 @@ internal fun ServerSetupScreen(
                 OrbitEyebrow("Private reader")
                 Text("Your library, in orbit.", style = MaterialTheme.typography.displaySmall)
                 Text(
-                    "Connect securely to your BookOrbit server. Your library stays on your server; this app is your reading window.",
+                    "Connect securely to your ${serverProviderDisplayName(providerId)} server. Your library stays on your server; this app is your reading window.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyLarge
                 )
@@ -107,7 +107,7 @@ internal fun ServerSetupScreen(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .semantics { contentDescription = "BookOrbit server URL" },
+                        .semantics { contentDescription = "${serverProviderDisplayName(providerId)} server URL" },
                     label = { Text("Server URL") },
                     placeholder = { Text("https://books.example.com") },
                     singleLine = true
@@ -121,12 +121,12 @@ internal fun ServerSetupScreen(
                         Button(
                             onClick = { providerId = PROVIDER_BOOKORBIT },
                             modifier = Modifier.weight(1f)
-                        ) { Text("BookOrbit") }
+                        ) { Text(serverProviderDisplayName(PROVIDER_BOOKORBIT)) }
                     } else {
                         OutlinedButton(
                             onClick = { providerId = PROVIDER_BOOKORBIT },
                             modifier = Modifier.weight(1f)
-                        ) { Text("BookOrbit") }
+                        ) { Text(serverProviderDisplayName(PROVIDER_BOOKORBIT)) }
                     }
                     if (providerId == PROVIDER_KOMGA) {
                         Button(
@@ -138,6 +138,17 @@ internal fun ServerSetupScreen(
                             onClick = { providerId = PROVIDER_KOMGA },
                             modifier = Modifier.weight(1f)
                         ) { Text("Komga") }
+                    }
+                    if (providerId == PROVIDER_KAVITA) {
+                        Button(
+                            onClick = { providerId = PROVIDER_KAVITA },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Kavita") }
+                    } else {
+                        OutlinedButton(
+                            onClick = { providerId = PROVIDER_KAVITA },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Kavita") }
                     }
                 }
                 error?.let {
@@ -269,7 +280,7 @@ internal fun LoginScreen(
 ) {
     var username by remember(serverUrl) { mutableStateOf("") }
     var password by remember(serverUrl) { mutableStateOf("") }
-    var passwordVisible by remember(serverUrl) { mutableStateOf(false) }
+    var passwordVisible by remember(serverUrl, providerId) { mutableStateOf(false) }
     var validationMessage by remember(serverUrl) { mutableStateOf<String?>(null) }
     var showServerPicker by rememberSaveable(serverUrl) { mutableStateOf(false) }
     val submit = {
@@ -333,7 +344,9 @@ internal fun LoginScreen(
                             color = MaterialTheme.colorScheme.secondary
                         )
                     }
-                    OrbitEyebrow("BookOrbit server")
+                    OrbitEyebrow(
+                        providerServerLabel(providerId)
+                    )
                     Text(serverUrl, style = MaterialTheme.typography.bodySmall)
                     OutlinedTextField(
                         value = username,
@@ -343,7 +356,7 @@ internal fun LoginScreen(
                         },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .semantics { contentDescription = "BookOrbit username" },
+                            .semantics { contentDescription = "${serverProviderDisplayName(providerId)} username" },
                         label = { Text("Username") },
                         singleLine = true,
                         enabled = !isSubmitting,
@@ -360,7 +373,7 @@ internal fun LoginScreen(
                         },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .semantics { contentDescription = "BookOrbit password" },
+                            .semantics { contentDescription = "${serverProviderDisplayName(providerId)} password" },
                         label = { Text("Password") },
                         singleLine = true,
                         enabled = !isSubmitting,
@@ -412,7 +425,7 @@ internal fun LoginScreen(
                         ) {
                             Text("Open server sign-in")
                         }
-                    } else {
+                    } else if (providerId == PROVIDER_BOOKORBIT) {
                         OutlinedButton(
                             onClick = onOpenOidcSignIn,
                             enabled = !isSubmitting,

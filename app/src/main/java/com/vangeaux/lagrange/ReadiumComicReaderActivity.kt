@@ -135,7 +135,7 @@ internal suspend fun openReadiumRemoteComic(
     httpClient: HttpClient? = null
 ): ReadiumComicOpenResult = withContext(Dispatchers.IO) {
     if (pageCount <= 0) {
-        return@withContext ReadiumComicOpenResult.Error("BookOrbit reported no comic pages.")
+        return@withContext ReadiumComicOpenResult.Error("The configured server reported no comic pages.")
     }
     val normalizedPagesUrl = pagesUrl.trimEnd('/')
     val baseUrl = AbsoluteUrl(normalizedPagesUrl.substringBefore('?') + "/")
@@ -177,6 +177,7 @@ internal suspend fun openReadiumRemoteComic(
 }
 
 internal fun comicPageUrl(pagesUrl: String, pageIndex: Int): String {
+    if (pagesUrl.contains("{page}")) return pagesUrl.replace("{page}", pageIndex.toString())
     val normalized = pagesUrl.trimEnd('/')
     val queryIndex = normalized.indexOf('?')
     return if (queryIndex < 0) {

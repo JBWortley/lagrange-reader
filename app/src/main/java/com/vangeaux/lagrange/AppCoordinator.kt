@@ -555,7 +555,9 @@ class AppCoordinator internal constructor(
             }
 
             if (startupCache == null) {
-                _screen.value = AppScreen.Startup("Connecting to BookOrbit…")
+                _screen.value = AppScreen.Startup(
+                    "Connecting to ${providerServerLabel(providerIdForLogin(repository.getServerUrl().orEmpty(), configuredServerProfiles()))}…"
+                )
             }
             val sessionState = loginModule()?.getSessionState() ?: repository.getSessionState()
             if (startupCache != null) {
@@ -1995,6 +1997,12 @@ class AppCoordinator internal constructor(
                             currentBook.copy(
                                 readStatus = status,
                                 isRead = status.isCompletedStatus(),
+                                progressPercent = if (status.isCompletedStatus()) 100f else currentBook.progressPercent,
+                                progressPageIndex = if (status.isCompletedStatus()) {
+                                    currentBook.readerPageCount?.minus(1)?.coerceAtLeast(0)
+                                } else {
+                                    currentBook.progressPageIndex
+                                },
                                 lastReadAtMillis = completedAtMillis
                             )
                         } else {
@@ -2034,6 +2042,9 @@ class AppCoordinator internal constructor(
                                 currentBook.copy(
                                     readStatus = BookReadStatus.READ,
                                     isRead = true,
+                                    progressLabel = "100%",
+                                    progressPercent = 100f,
+                                    progressPageIndex = currentBook.readerPageCount?.minus(1)?.coerceAtLeast(0),
                                     lastReadAtMillis = markedAtMillis
                                 )
                             } else {
@@ -2045,6 +2056,9 @@ class AppCoordinator internal constructor(
                                 currentBook.copy(
                                     readStatus = BookReadStatus.READ,
                                     isRead = true,
+                                    progressLabel = "100%",
+                                    progressPercent = 100f,
+                                    progressPageIndex = currentBook.readerPageCount?.minus(1)?.coerceAtLeast(0),
                                     lastReadAtMillis = markedAtMillis
                                 )
                             } else {
