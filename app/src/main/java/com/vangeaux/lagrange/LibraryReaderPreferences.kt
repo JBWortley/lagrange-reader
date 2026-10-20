@@ -65,7 +65,8 @@ data class LibraryReaderPreferences(
     val joinPdfFacingPages: Boolean = false,
     val invertPdfColors: Boolean = false,
     val comicLayoutMode: ReaderLayoutMode = ReaderLayoutMode.PAGINATED,
-    val comicPageGapDp: Float = DEFAULT_READER_PAGE_GAP_DP
+    val comicPageGapDp: Float = DEFAULT_READER_PAGE_GAP_DP,
+    val twoPageSpread: ReaderSpreadMode = ReaderSpreadMode.AUTO
 ) {
     fun normalized(): LibraryReaderPreferences = copy(
         fontScale = fontScale.coerceIn(MIN_EPUB_FONT_SCALE, MAX_EPUB_FONT_SCALE),
@@ -180,6 +181,7 @@ private fun libraryReaderPreferenceStorageValue(value: LibraryReaderPreferences)
             put("invertPdfColors", normalized.invertPdfColors)
             put("comicLayout", readerLayoutModeStorageValue(normalized.comicLayoutMode))
             put("comicPageGapDp", normalized.comicPageGapDp.toDouble())
+            put("twoPageSpread", readerSpreadModeStorageValue(normalized.twoPageSpread))
         }
     }
 
@@ -238,7 +240,8 @@ internal fun libraryReaderPreferencesFromStorage(value: String?): Map<String, Li
                         comicPageGapDp = item.optDouble(
                             "comicPageGapDp",
                             DEFAULT_READER_PAGE_GAP_DP.toDouble()
-                        ).toFloat()
+                        ).toFloat(),
+                        twoPageSpread = readerSpreadModeFromStorage(item.optString("twoPageSpread"))
                     ).normalized()
                 }.getOrNull()?.let { decoded -> put(libraryId, decoded) }
             }

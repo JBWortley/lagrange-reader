@@ -135,6 +135,38 @@ class LibraryReaderPreferencesTest {
     }
 
     @Test
+    fun `spread preferences round trip through storage`() {
+        val profile = LibraryReaderPreferences(twoPageSpread = ReaderSpreadMode.OFF)
+
+        val decoded = libraryReaderPreferencesFromStorage(
+            libraryReaderPreferencesStorageValue(mapOf("manga" to profile))
+        ).getValue("manga")
+
+        assertEquals(profile, decoded)
+        assertEquals(ReaderSpreadMode.OFF, decoded.twoPageSpread)
+    }
+
+    @Test
+    fun `legacy profiles without spread keys default to automatic spreads`() {
+        val decoded = libraryReaderPreferencesFromStorage(
+            """{"version":2,"profiles":{"library":{"theme":"oled_black"}}}"""
+        ).getValue("library")
+
+        assertEquals(ReaderSpreadMode.AUTO, decoded.twoPageSpread)
+        assertEquals(EpubReaderTheme.OledBlack, decoded.theme)
+    }
+
+    @Test
+    fun `unknown spread mode value falls back to automatic without dropping the profile`() {
+        val decoded = libraryReaderPreferencesFromStorage(
+            """{"version":2,"profiles":{"library":{"twoPageSpread":"sideways","fontScale":1.4}}}"""
+        ).getValue("library")
+
+        assertEquals(ReaderSpreadMode.AUTO, decoded.twoPageSpread)
+        assertEquals(1.4f, decoded.fontScale)
+    }
+
+    @Test
     fun `global navigation bar policy applies uniformly to supported readers`() {
         assertTrue(AppPreferences().hideNavigationBarWhileReading)
         assertFalse(AppPreferences().hideStatusBarWhileReading)

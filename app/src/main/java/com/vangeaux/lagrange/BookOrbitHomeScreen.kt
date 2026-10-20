@@ -4282,6 +4282,14 @@ private fun LibraryReaderConfiguration(
                     )
                 }
             )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Text("Unfolded screens", style = MaterialTheme.typography.titleMedium)
+            ReaderSpreadSettings(
+                value = value,
+                layoutMode = ReaderLayoutMode.PAGINATED,
+                testTagPrefix = "options-reading",
+                onPreferencesChange = { next -> onPreferencesChange(selectedLibrary.id, next) }
+            )
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     }
@@ -4630,6 +4638,12 @@ internal fun ReaderConfigurationControls(
                 testTagPrefix = "$testTagPrefix-epub",
                 onLayoutModeChange = { onPreferencesChange(value.copy(epubLayoutMode = it)) }
             )
+            ReaderSpreadSettings(
+                value = value,
+                layoutMode = value.epubLayoutMode,
+                testTagPrefix = "$testTagPrefix-epub",
+                onPreferencesChange = onPreferencesChange
+            )
             Text("Page margins", style = MaterialTheme.typography.titleMedium)
             listOf(
                 "Top" to value.padding.top,
@@ -4678,6 +4692,31 @@ internal fun ReaderConfigurationControls(
             onPageGapChange = { onPreferencesChange(value.copy(comicPageGapDp = it)) }
         )
     }
+}
+
+@Composable
+private fun ReaderSpreadSettings(
+    value: LibraryReaderPreferences,
+    layoutMode: ReaderLayoutMode,
+    testTagPrefix: String,
+    onPreferencesChange: (LibraryReaderPreferences) -> Unit
+) {
+    val spreadEnabled = value.twoPageSpread == ReaderSpreadMode.AUTO
+    AppPreferenceSwitchRow(
+        title = "Two-page spread when unfolded",
+        summary = if (layoutMode == ReaderLayoutMode.PAGINATED) {
+            "On a large screen held horizontally, show two pages side by side"
+        } else {
+            "Applies to paginated layout on a large screen held horizontally"
+        },
+        checked = spreadEnabled,
+        testTag = "$testTagPrefix-two-page-spread",
+        onCheckedChange = { enabled ->
+            onPreferencesChange(
+                value.copy(twoPageSpread = if (enabled) ReaderSpreadMode.AUTO else ReaderSpreadMode.OFF)
+            )
+        }
+    )
 }
 
 @Composable
