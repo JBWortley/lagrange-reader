@@ -1014,6 +1014,7 @@ class AppCoordinator internal constructor(
             if (current.providerId == PROVIDER_KOMGA) {
                 loginModule()?.clearSession()
             }
+            runCatching { repository.beginInteractiveSignIn() }
             _screen.value = current.copy(serverSignIn = ServerSignInState())
             startServerSignInWatcher()
         }
@@ -1024,6 +1025,7 @@ class AppCoordinator internal constructor(
             val current = _screen.value as? AppScreen.Login ?: return@launch
             serverSignInVerificationJob?.cancel()
             serverSignInVerificationJob = null
+            runCatching { repository.cancelInteractiveSignIn() }
             _screen.value = current.copy(serverSignIn = null)
         }
     }
@@ -1058,6 +1060,7 @@ class AppCoordinator internal constructor(
                         break
                     }
                     if ((loginModule()?.getSessionState() ?: repository.getSessionState()) == SessionState.Authenticated) {
+                        runCatching { repository.completeInteractiveSignIn() }
                         allowCachedLoginFallback = true
                         resumeAfterLogin()
                         break
