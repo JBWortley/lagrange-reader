@@ -59,7 +59,11 @@ internal fun EpubTtsControls(
 ) {
     var settingsVisible by remember { mutableStateOf(false) }
     Box(modifier = modifier.fillMaxWidth()) {
-        Card(modifier = Modifier.fillMaxWidth().navigationBarsPadding()) {
+        Card(
+            modifier = Modifier.fillMaxWidth().navigationBarsPadding(),
+            colors = epubReaderOledPanelColors(),
+            border = epubReaderOledPanelBorder()
+        ) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
