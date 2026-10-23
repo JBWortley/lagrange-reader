@@ -5,6 +5,9 @@ import com.vangeaux.lagrange.provider.kavita.kavitaAuthResponsePrincipal
 import com.vangeaux.lagrange.provider.kavita.kavitaJwtPrincipal
 import com.vangeaux.lagrange.provider.kavita.kavitaLoginEndpoint
 import com.vangeaux.lagrange.provider.kavita.kavitaSessionHeaders
+import com.vangeaux.lagrange.provider.kavita.KavitaCleanupAction
+import com.vangeaux.lagrange.provider.kavita.runBestEffortKavitaCleanup
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -54,5 +57,23 @@ class KavitaAuthContractTest {
         )
         assertTrue(kavitaSessionHeaders(null).isEmpty())
         assertTrue(kavitaSessionHeaders(" ").isEmpty())
+    }
+
+    @Test
+    fun `account cleanup continues after an individual store fails`() = runBlocking<Unit> {
+        val completed = mutableListOf<String>()
+        val failures = mutableListOf<String>()
+
+        runBestEffortKavitaCleanup(
+            actions = listOf(
+                KavitaCleanupAction("snapshot") { throw IllegalStateException("broken") },
+                KavitaCleanupAction("positions") { completed += "positions" },
+                KavitaCleanupAction("locators") { completed += "locators" }
+            ),
+            onFailure = { name, _ -> failures += name }
+        )
+
+        assertEquals(listOf("snapshot"), failures)
+        assertEquals(listOf("positions", "locators"), completed)
     }
 }
