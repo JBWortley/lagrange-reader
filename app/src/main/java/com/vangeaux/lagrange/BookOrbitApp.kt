@@ -57,6 +57,7 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
@@ -1783,6 +1784,8 @@ internal fun EpubReaderOptionsBottomSheet(
     onShowTapZoneTutorialAfterChangesChange: (Boolean) -> Unit = {},
     onCustomFontRequest: () -> Unit = {},
     onCustomFontRemove: () -> Unit = {},
+    bookLanguage: EpubBookLanguageChoice? = null,
+    onBookLanguageChange: (String?) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val parentTypography = MaterialTheme.typography
@@ -1923,6 +1926,10 @@ internal fun EpubReaderOptionsBottomSheet(
                                 Text("Close book")
                             }
                         }
+                        if (bookLanguage != null) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+                            EpubBookLanguageSettings(bookLanguage, onBookLanguageChange)
+                        }
                         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
                         Text("Reading configuration", style = MaterialTheme.typography.titleMedium)
                         ReaderConfigurationControls(
@@ -1938,6 +1945,74 @@ internal fun EpubReaderOptionsBottomSheet(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun EpubBookLanguageSettings(
+    choice: EpubBookLanguageChoice,
+    onChange: (String?) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val isOverride = choice.resolved.source == EpubContentLanguageSource.OVERRIDE
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("This book", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Language for read-aloud voices and hyphenation",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Box {
+            OutlinedButton(
+                onClick = { expanded = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("reader-options-book-language-dropdown")
+            ) {
+                Text(
+                    "Book language: ${choice.summary}",
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+    if (expanded) {
+        val options = remember(choice) {
+            choice.suggested + choice.all.filterNot { option -> choice.suggested.any { it.tag == option.tag } }
+        }
+        fun selected(tag: String) = isOverride && choice.resolved.tag == tag
+        fun pick(tag: String?) {
+            expanded = false
+            onChange(tag)
+        }
+        // A dialog with a lazy list: the full language list is a couple of hundred entries.
+        AlertDialog(
+            onDismissRequest = { expanded = false },
+            title = { Text("Book language") },
+            text = {
+                LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
+                    item(key = "auto") {
+                        DropdownMenuItem(
+                            text = { Text(if (isOverride) "Auto (book, else device language)" else "✓ ${choice.summary}") },
+                            onClick = { pick(null) },
+                            modifier = Modifier.testTag("reader-options-book-language-auto")
+                        )
+                        HorizontalDivider()
+                    }
+                    itemsIndexed(options, key = { _, option -> option.tag }) { index, option ->
+                        if (index == choice.suggested.size) HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text(if (selected(option.tag)) "✓ ${option.displayName}" else option.displayName) },
+                            onClick = { pick(option.tag) },
+                            modifier = Modifier.testTag("reader-options-book-language-${option.tag}")
+                        )
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { expanded = false }) { Text("Cancel") } }
+        )
     }
 }
 
