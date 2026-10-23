@@ -136,8 +136,11 @@ internal class KavitaRepository(context: Context) : BookOrbitDataSource, Profile
         readingProgressModule.loadReaderProgress(book)
     override suspend fun markBookAsRead(book: BookSummary) = readingStatusModule.markBookAsRead(book)
     override suspend fun resetBookReadingState(book: BookSummary) = readingStatusModule.resetBookReadingState(book)
-    override suspend fun downloadBook(book: BookSummary, onProgress: (Float?) -> Unit): File =
-        downloadModule.downloadBook(book, onProgress)
+    override suspend fun downloadBook(
+        book: BookSummary,
+        storageScopeId: String?,
+        onProgress: (Float?) -> Unit
+    ): File = downloadModule.downloadBook(book, storageScopeId, onProgress)
     override suspend fun deleteLocalCopy(book: BookSummary) = downloadModule.deleteLocalCopy(book)
     override suspend fun deleteLocalCopies(book: BookSummary): Set<String> = downloadModule.deleteLocalCopies(book)
     override suspend fun loadCachedBrowserState(libraryId: String?): BrowserState? {

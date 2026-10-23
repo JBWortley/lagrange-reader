@@ -1,6 +1,8 @@
 package com.vangeaux.lagrange
 
 import com.vangeaux.lagrange.provider.kavita.kavitaAuthResponseToken
+import com.vangeaux.lagrange.provider.kavita.kavitaAuthResponsePrincipal
+import com.vangeaux.lagrange.provider.kavita.kavitaJwtPrincipal
 import com.vangeaux.lagrange.provider.kavita.kavitaLoginEndpoint
 import com.vangeaux.lagrange.provider.kavita.kavitaSessionHeaders
 import org.junit.Assert.assertEquals
@@ -22,6 +24,26 @@ class KavitaAuthContractTest {
         assertEquals("jwt-token", kavitaAuthResponseToken("{\"token\":\"jwt-token\"}"))
         assertNull(kavitaAuthResponseToken("{\"token\":\"\"}"))
         assertNull(kavitaAuthResponseToken("not-json"))
+    }
+
+    @Test
+    fun `authentication response uses stable numeric account id`() {
+        val principal = kavitaAuthResponsePrincipal(
+            "{\"id\":42,\"username\":\"renameable\",\"token\":\"jwt-token\"}"
+        )
+
+        assertEquals("id:42", principal?.canonical)
+        assertNull(kavitaAuthResponsePrincipal("{\"username\":\"renameable\"}"))
+    }
+
+    @Test
+    fun `stored jwt can restore the stable Kavita account id`() {
+        val payload = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
+            "{\"nameid\":\"42\",\"unique_name\":\"renameable\"}".toByteArray()
+        )
+
+        assertEquals("id:42", kavitaJwtPrincipal("header.$payload.signature")?.canonical)
+        assertNull(kavitaJwtPrincipal("not-a-jwt"))
     }
 
     @Test
