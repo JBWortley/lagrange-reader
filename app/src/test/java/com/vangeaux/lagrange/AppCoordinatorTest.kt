@@ -1,6 +1,7 @@
 package com.vangeaux.lagrange
 
 import com.vangeaux.lagrange.core.ProviderSessionModule
+import com.vangeaux.lagrange.provider.resolveProviderHomeShelfModule
 import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
@@ -3211,6 +3212,22 @@ class AppCoordinatorTest {
         assertTrue("screen=${coordinator.screen.value}", coordinator.screen.value is AppScreen.Browser)
         assertEquals(7, repository.sessionStateCalls)
     }
+
+    @Test
+    fun `BookOrbit Home resolver forwards authoritative server shelves`() = runTest {
+        val expected = HomeShelfData(
+            booksBySection = mapOf(
+                HomeSection.ON_DECK to listOf(book.copy(id = "on-deck"))
+            ),
+            isServerProvided = true
+        )
+        val repository = FakeBookOrbitDataSource(homeShelvesResult = expected)
+
+        val actual = resolveProviderHomeShelfModule(repository).loadHomeShelves()
+
+        assertSame(expected, actual)
+        assertEquals(1, repository.loadHomeShelvesCalls)
+    }
 }
 
 private class FakeBookOrbitDataSource(
@@ -3243,6 +3260,7 @@ private class FakeBookOrbitDataSource(
     var downloadGate: CompletableDeferred<Unit>? = null,
     var loadLibrariesResult: List<LibrarySummary> = emptyList(),
     var loadBooksResult: List<BookSummary> = emptyList(),
+    var homeShelvesResult: HomeShelfData = HomeShelfData(),
     var cachedLibraryCatalog: LibraryBooksPage? = null,
     var refreshLibraryCatalogResult: LibraryBooksPage? = null,
     var refreshLibraryCatalogResults: Map<String, LibraryBooksPage> = emptyMap(),
@@ -3288,6 +3306,7 @@ private class FakeBookOrbitDataSource(
     var syncPendingProgressCalls = 0
     var sessionStateRequested = false
     var sessionStateCalls = 0
+    var loadHomeShelvesCalls = 0
     var onSessionState: (() -> Unit)? = null
     var selectedLibraryId: String? = null
     val loginCalls = mutableListOf<Pair<String, String>>()
@@ -3346,6 +3365,11 @@ private class FakeBookOrbitDataSource(
     override suspend fun loadCachedLibraryCatalog(libraryId: String): LibraryBooksPage? = cachedLibraryCatalog
 
     override suspend fun loadCachedHomeBooks(): List<BookSummary> = cachedBrowserState?.homeBooks.orEmpty()
+
+    override suspend fun loadHomeShelves(): HomeShelfData {
+        loadHomeShelvesCalls += 1
+        return homeShelvesResult
+    }
 
     override suspend fun refreshLibraryCatalog(
         libraryId: String,
