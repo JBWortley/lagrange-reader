@@ -4083,7 +4083,7 @@ internal fun OptionsScreen(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AutomaticBookDownloadConfiguration(
+internal fun AutomaticBookDownloadConfiguration(
     policy: AutomaticDownloadPolicy,
     libraries: List<LibrarySummary>,
     status: AutomaticDownloadStatus,
@@ -4091,16 +4091,44 @@ private fun AutomaticBookDownloadConfiguration(
     onSyncNow: () -> Unit,
     onCancel: () -> Unit
 ) {
-    var reserveText by remember(policy.profileId) {
+    var reserveText by remember(policy.profileId, policy.serverUrl, policy.storageScopeId) {
         mutableStateOf(formatAutomaticDownloadGiB(policy.reserveBytes))
     }
-    var maximumText by remember(policy.profileId) {
+    var maximumText by remember(policy.profileId, policy.serverUrl, policy.storageScopeId) {
         mutableStateOf(formatAutomaticDownloadGiB(policy.maximumBytes))
     }
     var limitError by remember { mutableStateOf(false) }
+    var activationError by remember { mutableStateOf<String?>(null) }
+    var pendingConfirmation by remember {
+        mutableStateOf<AutomaticDownloadConfirmation?>(null)
+    }
     val hasScope = policy.scope == AutomaticDownloadScope.ALL_LIBRARIES ||
         policy.selectedLibraryIds.isNotEmpty()
     val isRunning = status.state == AutomaticDownloadRunState.RUNNING
+    LaunchedEffect(policy.profileId, policy.serverUrl, policy.storageScopeId) {
+        pendingConfirmation = null
+        activationError = null
+        limitError = false
+    }
+
+    fun policyWithEditedLimits(base: AutomaticDownloadPolicy): AutomaticDownloadPolicy? {
+        val reserve = parseAutomaticDownloadGiB(reserveText)
+        val maximum = parseAutomaticDownloadGiB(maximumText)
+        if (reserve == null || maximum == null) {
+            limitError = true
+            return null
+        }
+        return base.copy(reserveBytes = reserve, maximumBytes = maximum)
+    }
+
+    fun requestRiskyChange(candidate: AutomaticDownloadPolicy) {
+        val risks = automaticDownloadRiskyChanges(policy, candidate)
+        if (automaticDownloadChangeRequiresConfirmation(policy, risks)) {
+            pendingConfirmation = AutomaticDownloadConfirmation.RiskyChange(candidate, risks)
+        } else {
+            onPolicyChange(candidate)
+        }
+    }
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -4123,8 +4151,33 @@ private fun AutomaticBookDownloadConfiguration(
                 summary = "Off by default; existing downloads are never removed by this switch",
                 checked = policy.enabled,
                 testTag = "automatic-download-enabled",
-                onCheckedChange = { onPolicyChange(policy.copy(enabled = it)) }
+                onCheckedChange = { enabled ->
+                    activationError = null
+                    if (!enabled) {
+                        pendingConfirmation = null
+                        onPolicyChange(policy.copy(enabled = false))
+                    } else {
+                        val candidate = policyWithEditedLimits(policy.copy(enabled = true))
+                        when {
+                            candidate == null -> Unit
+                            !candidate.hasAutomaticDownloadScope() -> {
+                                activationError = "Select at least one library before enabling automatic downloads."
+                            }
+                            else -> {
+                                pendingConfirmation = AutomaticDownloadConfirmation.EnableReview(candidate)
+                            }
+                        }
+                    }
+                }
             )
+            activationError?.let {
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.testTag("automatic-download-activation-error")
+                )
+            }
             Text("Library scope", style = MaterialTheme.typography.titleMedium)
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -4227,14 +4280,14 @@ private fun AutomaticBookDownloadConfiguration(
                 summary = "Recommended for background book downloads",
                 checked = policy.unmeteredOnly,
                 testTag = "automatic-download-unmetered",
-                onCheckedChange = { onPolicyChange(policy.copy(unmeteredOnly = it)) }
+                onCheckedChange = { requestRiskyChange(policy.copy(unmeteredOnly = it)) }
             )
             AppPreferenceSwitchRow(
                 title = "Only while charging",
                 summary = "Enabled by default",
                 checked = policy.chargingRequired,
                 testTag = "automatic-download-charging",
-                onCheckedChange = { onPolicyChange(policy.copy(chargingRequired = it)) }
+                onCheckedChange = { requestRiskyChange(policy.copy(chargingRequired = it)) }
             )
             HorizontalDivider()
             Text("Storage limits", style = MaterialTheme.typography.titleMedium)
@@ -4291,7 +4344,14 @@ private fun AutomaticBookDownloadConfiguration(
                 summary = "Off by default. If either device-wide limit is crossed, completed books are removed first, then the least recently used. This also applies when automatic syncing is off, but never removes an active book or transfer.",
                 checked = policy.automaticRemovalEnabled,
                 testTag = "automatic-download-removal",
-                onCheckedChange = { onPolicyChange(policy.copy(automaticRemovalEnabled = it)) }
+                onCheckedChange = { enabled ->
+                    val candidate = if (enabled) {
+                        policyWithEditedLimits(policy.copy(automaticRemovalEnabled = true))
+                    } else {
+                        policy.copy(automaticRemovalEnabled = false)
+                    }
+                    if (candidate != null) requestRiskyChange(candidate)
+                }
             )
             if (isRunning) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -4337,7 +4397,182 @@ private fun AutomaticBookDownloadConfiguration(
             )
         }
     }
+
+    when (val confirmation = pendingConfirmation) {
+        is AutomaticDownloadConfirmation.EnableReview -> {
+            AlertDialog(
+                onDismissRequest = { pendingConfirmation = null },
+                title = { Text("Review automatic downloads") },
+                text = {
+                    Column(
+                        modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        automaticDownloadReviewLines(confirmation.policy, libraries).forEach { line ->
+                            Text(line)
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            pendingConfirmation = AutomaticDownloadConfirmation.EnableConsent(
+                                confirmation.policy
+                            )
+                        },
+                        modifier = Modifier.testTag("automatic-download-review-continue")
+                    ) { Text("Continue") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingConfirmation = null }) { Text("Cancel") }
+                },
+                modifier = Modifier.testTag("automatic-download-review-dialog")
+            )
+        }
+        is AutomaticDownloadConfirmation.EnableConsent -> {
+            AlertDialog(
+                onDismissRequest = { pendingConfirmation = null },
+                title = { Text("Enable automatic downloads?") },
+                text = {
+                    Text(
+                        "I understand that automatic downloads may use storage, network data, battery, and background processing."
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            onPolicyChange(confirmation.policy)
+                            reserveText = formatAutomaticDownloadGiB(confirmation.policy.reserveBytes)
+                            maximumText = formatAutomaticDownloadGiB(confirmation.policy.maximumBytes)
+                            pendingConfirmation = null
+                        },
+                        modifier = Modifier.testTag("automatic-download-confirm-enable")
+                    ) { Text("I understand - enable") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingConfirmation = null }) { Text("Cancel") }
+                },
+                modifier = Modifier.testTag("automatic-download-consent-dialog")
+            )
+        }
+        is AutomaticDownloadConfirmation.RiskyChange -> {
+            AlertDialog(
+                onDismissRequest = { pendingConfirmation = null },
+                title = { Text("Confirm automatic-download change") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        confirmation.risks.forEach { Text(it.description) }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            onPolicyChange(confirmation.policy)
+                            reserveText = formatAutomaticDownloadGiB(confirmation.policy.reserveBytes)
+                            maximumText = formatAutomaticDownloadGiB(confirmation.policy.maximumBytes)
+                            pendingConfirmation = null
+                        },
+                        modifier = Modifier.testTag("automatic-download-confirm-risky-change")
+                    ) { Text("Apply change") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingConfirmation = null }) { Text("Cancel") }
+                },
+                modifier = Modifier.testTag("automatic-download-risk-dialog")
+            )
+        }
+        null -> Unit
+    }
 }
+
+private sealed interface AutomaticDownloadConfirmation {
+    val policy: AutomaticDownloadPolicy
+
+    data class EnableReview(override val policy: AutomaticDownloadPolicy) :
+        AutomaticDownloadConfirmation
+
+    data class EnableConsent(override val policy: AutomaticDownloadPolicy) :
+        AutomaticDownloadConfirmation
+
+    data class RiskyChange(
+        override val policy: AutomaticDownloadPolicy,
+        val risks: List<AutomaticDownloadRisk>
+    ) : AutomaticDownloadConfirmation
+}
+
+internal enum class AutomaticDownloadRisk(val description: String) {
+    AUTOMATIC_REMOVAL(
+        "Automatic cleanup can remove completed local copies when a storage limit is crossed."
+    ),
+    METERED_NETWORK(
+        "Automatic downloads may use metered or cellular network data."
+    ),
+    NOT_CHARGING(
+        "Automatic downloads may use battery power while the device is not charging."
+    )
+}
+
+internal fun automaticDownloadRiskyChanges(
+    current: AutomaticDownloadPolicy,
+    candidate: AutomaticDownloadPolicy
+): List<AutomaticDownloadRisk> = buildList {
+    if (!current.automaticRemovalEnabled && candidate.automaticRemovalEnabled) {
+        add(AutomaticDownloadRisk.AUTOMATIC_REMOVAL)
+    }
+    if (current.unmeteredOnly && !candidate.unmeteredOnly) {
+        add(AutomaticDownloadRisk.METERED_NETWORK)
+    }
+    if (current.chargingRequired && !candidate.chargingRequired) {
+        add(AutomaticDownloadRisk.NOT_CHARGING)
+    }
+}
+
+internal fun automaticDownloadChangeRequiresConfirmation(
+    current: AutomaticDownloadPolicy,
+    risks: List<AutomaticDownloadRisk>
+): Boolean = AutomaticDownloadRisk.AUTOMATIC_REMOVAL in risks ||
+    (current.enabled && risks.isNotEmpty())
+
+internal fun AutomaticDownloadPolicy.hasAutomaticDownloadScope(): Boolean =
+    scope == AutomaticDownloadScope.ALL_LIBRARIES || selectedLibraryIds.isNotEmpty()
+
+internal fun automaticDownloadReviewLines(
+    policy: AutomaticDownloadPolicy,
+    libraries: List<LibrarySummary>
+): List<String> {
+    val libraryNames = libraries.associate { it.id to it.name }
+    val scopeSummary = if (policy.scope == AutomaticDownloadScope.ALL_LIBRARIES) {
+        "Libraries: All current and future libraries"
+    } else {
+        val selected = policy.selectedLibraryIds.sorted().map { libraryNames[it] ?: it }
+        "Libraries: ${selected.joinToString()}"
+    }
+    return listOf(
+        scopeSummary,
+        "Books: " + if (policy.initialMode == AutomaticDownloadInitialMode.EXISTING_AND_FUTURE) {
+            "Existing and future books"
+        } else {
+            "New books only"
+        },
+        "Copies per book: " + if (policy.allReadableCopies) {
+            "Every readable copy"
+        } else {
+            "Preferred readable copy"
+        },
+        "Network: " + if (policy.unmeteredOnly) {
+            "Unmetered only"
+        } else {
+            "Any connected network (cellular policy still applies)"
+        },
+        "Power: " + if (policy.chargingRequired) "Only while charging" else "Charging not required",
+        "Maximum local-book storage: ${formatAutomaticDownloadLimit(policy.maximumBytes)}",
+        "Reserved minimum free space: ${formatAutomaticDownloadLimit(policy.reserveBytes)}",
+        "Automatic cleanup: " + if (policy.automaticRemovalEnabled) "Enabled" else "Disabled"
+    )
+}
+
+private fun formatAutomaticDownloadLimit(bytes: Long): String =
+    if (bytes <= 0L) "No limit" else "${formatAutomaticDownloadGiB(bytes)} GB"
 
 internal fun parseAutomaticDownloadGiB(value: String): Long? {
     val gib = value.trim().toDoubleOrNull()

@@ -9,6 +9,86 @@ import org.junit.Test
 
 class AutomaticDownloadsTest {
     @Test
+    fun `automatic downloads require all-libraries or a selected library`() {
+        val emptySelection = policy().copy(
+            scope = AutomaticDownloadScope.SELECTED_LIBRARIES,
+            selectedLibraryIds = emptySet()
+        )
+
+        assertFalse(emptySelection.hasAutomaticDownloadScope())
+        assertTrue(emptySelection.copy(selectedLibraryIds = setOf("articles")).hasAutomaticDownloadScope())
+        assertTrue(emptySelection.copy(scope = AutomaticDownloadScope.ALL_LIBRARIES).hasAutomaticDownloadScope())
+    }
+
+    @Test
+    fun `review summary describes the frozen effective policy`() {
+        val reviewed = policy().copy(
+            scope = AutomaticDownloadScope.SELECTED_LIBRARIES,
+            selectedLibraryIds = setOf("comics", "articles"),
+            initialMode = AutomaticDownloadInitialMode.NEW_BOOKS_ONLY,
+            unmeteredOnly = false,
+            chargingRequired = true,
+            maximumBytes = 0L,
+            reserveBytes = 512L * 1024L * 1024L,
+            automaticRemovalEnabled = true
+        )
+
+        val lines = automaticDownloadReviewLines(
+            reviewed,
+            listOf(
+                LibrarySummary("articles", "Articles"),
+                LibrarySummary("comics", "Comics")
+            )
+        )
+
+        assertEquals("Libraries: Articles, Comics", lines[0])
+        assertTrue("Books: New books only" in lines)
+        assertTrue("Copies per book: Preferred readable copy" in lines)
+        assertTrue("Network: Any connected network (cellular policy still applies)" in lines)
+        assertTrue("Power: Only while charging" in lines)
+        assertTrue("Maximum local-book storage: No limit" in lines)
+        assertTrue("Reserved minimum free space: 0.5 GB" in lines)
+        assertTrue("Automatic cleanup: Enabled" in lines)
+    }
+
+    @Test
+    fun `only newly risky active-policy changes require warning`() {
+        val current = policy().copy(enabled = true)
+        assertEquals(
+            listOf(AutomaticDownloadRisk.AUTOMATIC_REMOVAL),
+            automaticDownloadRiskyChanges(
+                current,
+                current.copy(automaticRemovalEnabled = true)
+            )
+        )
+        assertEquals(
+            listOf(AutomaticDownloadRisk.METERED_NETWORK),
+            automaticDownloadRiskyChanges(current, current.copy(unmeteredOnly = false))
+        )
+        assertEquals(
+            listOf(AutomaticDownloadRisk.NOT_CHARGING),
+            automaticDownloadRiskyChanges(current, current.copy(chargingRequired = false))
+        )
+        assertTrue(
+            automaticDownloadRiskyChanges(
+                current.copy(automaticRemovalEnabled = true),
+                current
+            ).isEmpty()
+        )
+        assertTrue(
+            automaticDownloadChangeRequiresConfirmation(
+                current.copy(enabled = false),
+                listOf(AutomaticDownloadRisk.AUTOMATIC_REMOVAL)
+            )
+        )
+        assertFalse(
+            automaticDownloadChangeRequiresConfirmation(
+                current.copy(enabled = false),
+                listOf(AutomaticDownloadRisk.METERED_NETWORK)
+            )
+        )
+    }
+    @Test
     fun `policy defaults are conservative`() {
         val policy = AutomaticDownloadPolicy("profile", "https://example.test")
 
@@ -465,6 +545,12 @@ class AutomaticDownloadsTest {
         completed = completed,
         lastAccessedAtMillis = accessed,
         downloadedAtMillis = downloaded
+    )
+
+    private fun policy() = AutomaticDownloadPolicy(
+        profileId = "profile",
+        serverUrl = "https://example.test",
+        storageScopeId = "account"
     )
 
     private fun book(fileId: String, kind: MediaKind, format: String) = BookSummary(
