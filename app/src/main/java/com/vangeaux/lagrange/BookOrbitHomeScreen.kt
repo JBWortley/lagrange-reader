@@ -2086,6 +2086,7 @@ internal fun NativeLibraryBrowserScreen(
                     preferences = appPreferences,
                     libraries = state.libraries,
                     serverUrl = state.serverUrl,
+                    profileId = state.profileId,
                     homeShelfPreferences = state.homeShelfPreferences,
                     onPreferencesChange = onAppPreferencesChange,
                     storageUsageLoader = storageUsageLoader,
@@ -3515,6 +3516,7 @@ internal fun OptionsScreen(
     preferences: AppPreferences,
     libraries: List<LibrarySummary> = emptyList(),
     serverUrl: String = "",
+    profileId: String? = null,
     homeShelfPreferences: HomeShelfPreferences = HomeShelfPreferences(),
     onPreferencesChange: (AppPreferences) -> Unit,
     storageUsageLoader: suspend () -> StorageUsage = { StorageUsage() },
@@ -3545,11 +3547,14 @@ internal fun OptionsScreen(
     var isClearingDownloadedBooks by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val activeProfile = remember(serverUrl) { ServerProfileStore(context).active() }
-    val automaticProfileId = activeProfile?.id ?: serverProfileId(serverUrl)
-    val automaticStorageScopeId = remember(serverUrl, automaticProfileId) {
+    val automaticProfileId = profileId ?: serverProfileId(serverUrl)
+    val automaticStorageScopeId =
         downloadStorageScopeId(context, serverUrl, automaticProfileId) ?: "unresolved-account"
-    }
+    val automaticOwner = AutomaticDownloadOwnerKey(
+        profileId = automaticProfileId,
+        serverUrl = serverUrl,
+        storageScopeId = automaticStorageScopeId
+    )
     val automaticPolicyStore = remember { AutomaticDownloadPolicyStore(context) }
     var automaticPolicy by remember(automaticProfileId, serverUrl, automaticStorageScopeId) {
         mutableStateOf(
@@ -3566,7 +3571,8 @@ internal fun OptionsScreen(
             automaticStorageScopeId
         ),
         automaticDownloadRefreshKey,
-        automaticProfileId
+        automaticProfileId,
+        automaticStorageScopeId
     ) {
         repeat(160) { attempt ->
             value = AutomaticDownloadStatusStore(context).read(
@@ -3578,11 +3584,22 @@ internal fun OptionsScreen(
         }
     }
     val saveAutomaticPolicy: (AutomaticDownloadPolicy) -> Unit = { requested ->
-        if (automaticStorageScopeId != "unresolved-account") {
+        val requestedOwner = requested.ownerKey()
+        val liveOwner = currentAutomaticDownloadOwnerKey(
+            context = context,
+            expectedProfileId = requested.profileId,
+            serverUrl = requested.serverUrl
+        )
+        if (automaticDownloadOwnersMatch(requestedOwner, automaticOwner) &&
+            liveOwner != null &&
+            automaticDownloadOwnersMatch(requestedOwner, liveOwner)
+        ) {
             val saved = automaticPolicyStore.save(requested)
             automaticPolicy = saved
             AutomaticDownloadScheduler.reconfigure(context, saved)
             automaticDownloadRefreshKey += 1
+        } else {
+            storageMessage = "The active profile or signed-in account changed. Review the setting again."
         }
     }
     val storageUsage by produceState<StorageUsage?>(initialValue = null, storageRefreshKey) {
@@ -3884,6 +3901,16 @@ internal fun OptionsScreen(
                 libraries = libraries,
                 status = automaticStatus,
                 onPolicyChange = saveAutomaticPolicy,
+                ownerIsCurrent = { candidateOwner ->
+                    automaticDownloadOwnersMatch(candidateOwner, automaticOwner) &&
+                        currentAutomaticDownloadOwnerKey(
+                            context = context,
+                            expectedProfileId = candidateOwner.profileId,
+                            serverUrl = candidateOwner.serverUrl
+                        )?.let { liveOwner ->
+                            automaticDownloadOwnersMatch(candidateOwner, liveOwner)
+                        } == true
+                },
                 onSyncNow = {
                     if (AutomaticDownloadScheduler.enqueueNow(context, automaticPolicy)) {
                         automaticDownloadRefreshKey += 1
@@ -4088,29 +4115,25 @@ internal fun AutomaticBookDownloadConfiguration(
     libraries: List<LibrarySummary>,
     status: AutomaticDownloadStatus,
     onPolicyChange: (AutomaticDownloadPolicy) -> Unit,
+    ownerIsCurrent: (AutomaticDownloadOwnerKey) -> Boolean = { true },
     onSyncNow: () -> Unit,
     onCancel: () -> Unit
 ) {
-    var reserveText by remember(policy.profileId, policy.serverUrl, policy.storageScopeId) {
+    val ownerKey = policy.ownerKey()
+    var reserveText by remember(ownerKey) {
         mutableStateOf(formatAutomaticDownloadGiB(policy.reserveBytes))
     }
-    var maximumText by remember(policy.profileId, policy.serverUrl, policy.storageScopeId) {
+    var maximumText by remember(ownerKey) {
         mutableStateOf(formatAutomaticDownloadGiB(policy.maximumBytes))
     }
-    var limitError by remember { mutableStateOf(false) }
-    var activationError by remember { mutableStateOf<String?>(null) }
-    var pendingConfirmation by remember {
+    var limitError by remember(ownerKey) { mutableStateOf(false) }
+    var activationError by remember(ownerKey) { mutableStateOf<String?>(null) }
+    var pendingConfirmation by remember(ownerKey) {
         mutableStateOf<AutomaticDownloadConfirmation?>(null)
     }
     val hasScope = policy.scope == AutomaticDownloadScope.ALL_LIBRARIES ||
         policy.selectedLibraryIds.isNotEmpty()
     val isRunning = status.state == AutomaticDownloadRunState.RUNNING
-    LaunchedEffect(policy.profileId, policy.serverUrl, policy.storageScopeId) {
-        pendingConfirmation = null
-        activationError = null
-        limitError = false
-    }
-
     fun policyWithEditedLimits(base: AutomaticDownloadPolicy): AutomaticDownloadPolicy? {
         val reserve = parseAutomaticDownloadGiB(reserveText)
         val maximum = parseAutomaticDownloadGiB(maximumText)
@@ -4128,6 +4151,22 @@ internal fun AutomaticBookDownloadConfiguration(
         } else {
             onPolicyChange(candidate)
         }
+    }
+
+    fun applyConfirmedPolicy(candidate: AutomaticDownloadPolicy) {
+        val candidateOwner = candidate.ownerKey()
+        if (!automaticDownloadOwnersMatch(candidateOwner, ownerKey) ||
+            !ownerIsCurrent(candidateOwner)
+        ) {
+            pendingConfirmation = null
+            activationError =
+                "The active profile or signed-in account changed. Review the setting again."
+            return
+        }
+        onPolicyChange(candidate)
+        reserveText = formatAutomaticDownloadGiB(candidate.reserveBytes)
+        maximumText = formatAutomaticDownloadGiB(candidate.maximumBytes)
+        pendingConfirmation = null
     }
     Card(
         modifier = Modifier
@@ -4441,10 +4480,7 @@ internal fun AutomaticBookDownloadConfiguration(
                 confirmButton = {
                     TextButton(
                         onClick = {
-                            onPolicyChange(confirmation.policy)
-                            reserveText = formatAutomaticDownloadGiB(confirmation.policy.reserveBytes)
-                            maximumText = formatAutomaticDownloadGiB(confirmation.policy.maximumBytes)
-                            pendingConfirmation = null
+                            applyConfirmedPolicy(confirmation.policy)
                         },
                         modifier = Modifier.testTag("automatic-download-confirm-enable")
                     ) { Text("I understand - enable") }
@@ -4467,10 +4503,7 @@ internal fun AutomaticBookDownloadConfiguration(
                 confirmButton = {
                     TextButton(
                         onClick = {
-                            onPolicyChange(confirmation.policy)
-                            reserveText = formatAutomaticDownloadGiB(confirmation.policy.reserveBytes)
-                            maximumText = formatAutomaticDownloadGiB(confirmation.policy.maximumBytes)
-                            pendingConfirmation = null
+                            applyConfirmedPolicy(confirmation.policy)
                         },
                         modifier = Modifier.testTag("automatic-download-confirm-risky-change")
                     ) { Text("Apply change") }
