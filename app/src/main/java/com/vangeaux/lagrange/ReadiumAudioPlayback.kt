@@ -537,7 +537,14 @@ internal fun activeBookSummaryForActiveFile(
         format = activeFile.book.format,
         localPath = activeFile.book.localPath,
         audioAssetId = activeFile.book.audioAssetId,
-        audioManifestRevision = activeFile.book.audioManifestRevision
+        audioManifestRevision = activeFile.book.audioManifestRevision,
+        coverUrl = activeFile.book.coverUrl ?: book.coverUrl,
+        audiobookCoverUrl = activeFile.book.audiobookCoverUrl ?: book.audiobookCoverUrl,
+        coverAspectRatio = if (book.mediaKind == MediaKind.AUDIO || activeFile.mediaKind == MediaKind.AUDIO) {
+            CoverAspectRatio.SQUARE
+        } else {
+            activeFile.book.coverAspectRatio
+        }
     )
 }
 
@@ -954,6 +961,7 @@ class ReadiumAudioPlaybackService : MediaSessionService() {
 
         fun activeBookSummary(): BookSummary =
             activeBookSummaryForActiveFile(book, audioFiles, currentFileId())
+                .copy(coverAspectRatio = CoverAspectRatio.SQUARE)
 
         fun currentFilePositionMs(): Long = player.currentPosition.coerceAtLeast(0L)
 
