@@ -166,6 +166,35 @@ internal data class AutomaticDownloadPolicy(
             initialMode != previous.initialMode
 }
 
+internal data class AutomaticDownloadOwnerKey(
+    val profileId: String,
+    val serverUrl: String,
+    val storageScopeId: String
+)
+
+internal fun AutomaticDownloadPolicy.ownerKey(): AutomaticDownloadOwnerKey =
+    AutomaticDownloadOwnerKey(profileId, serverUrl, storageScopeId)
+
+internal fun automaticDownloadOwnersMatch(
+    first: AutomaticDownloadOwnerKey,
+    second: AutomaticDownloadOwnerKey
+): Boolean = first.profileId == second.profileId &&
+    first.storageScopeId == second.storageScopeId &&
+    serverUrlsMatch(first.serverUrl, second.serverUrl)
+
+internal fun currentAutomaticDownloadOwnerKey(
+    context: Context,
+    expectedProfileId: String,
+    serverUrl: String
+): AutomaticDownloadOwnerKey? {
+    val activeProfile = ServerProfileStore(context).active()
+        ?.takeIf { it.id == expectedProfileId && serverUrlsMatch(it.serverUrl, serverUrl) }
+        ?: return null
+    val storageScopeId = downloadStorageScopeId(context, serverUrl, activeProfile.id)
+        ?: return null
+    return AutomaticDownloadOwnerKey(activeProfile.id, activeProfile.serverUrl, storageScopeId)
+}
+
 private fun normalizeAutomaticDownloadLimit(value: Long): Long = if (value <= 0L) {
     0L
 } else {
@@ -289,10 +318,10 @@ internal class AutomaticDownloadPolicyStore(context: Context) {
                         previous.baselineGeneration
                     }
                 )
-                preferences.edit().putString(
+                check(preferences.edit().putString(
                     key(next.profileId, next.storageScopeId),
                     next.toJson().toString()
-                ).apply()
+                ).commit()) { "Could not persist the automatic-download policy." }
                 next
             }
         }

@@ -1013,14 +1013,52 @@ internal fun verifiedReplacementWakeTargets(
     .map { VerifiedReplacementWakeTarget(it.serverUrl, it.storageScopeId, it.fileId) }
     .toSet()
 
+/**
+ * Linearizes the final automatic-download admission with policy changes. Catalog work stays
+ * outside the guard, but a disabled or superseded policy cannot publish new durable queue work.
+ */
+internal suspend fun admitAutomaticDownloadRequests(
+    expectedPolicy: AutomaticDownloadPolicy,
+    requests: List<Pair<DownloadQueueEntry, DownloadAttempt>>,
+    beforeAtomicAdmission: suspend () -> Unit = {},
+    readPolicy: () -> AutomaticDownloadPolicy,
+    currentOwner: () -> AutomaticDownloadOwnerKey?,
+    persist: suspend (List<Pair<DownloadQueueEntry, DownloadAttempt>>) -> List<DownloadQueueEntry>,
+    rollback: suspend (DownloadQueueEntry) -> Unit
+): List<DownloadQueueEntry> {
+    if (requests.isEmpty()) return emptyList()
+    beforeAtomicAdmission()
+    val expectedOwner = expectedPolicy.ownerKey()
+    return localCopyDeletionGuard.withLock {
+        val currentPolicy = readPolicy()
+        if (!currentPolicy.enabled ||
+            currentPolicy.generation != expectedPolicy.generation ||
+            !automaticDownloadOwnersMatch(currentPolicy.ownerKey(), expectedOwner) ||
+            currentOwner()?.let { automaticDownloadOwnersMatch(it, expectedOwner) } != true
+        ) {
+            return@withLock emptyList()
+        }
+
+        val accepted = persist(requests)
+        if (currentOwner()?.let { automaticDownloadOwnersMatch(it, expectedOwner) } == true) {
+            return@withLock accepted
+        }
+
+        accepted.forEach { rollback(it) }
+        emptyList()
+    }
+}
+
 internal suspend fun enqueueAutomaticDownloadBatch(
     context: Context,
     profileId: String,
     serverUrl: String,
     policy: AutomaticDownloadPolicy,
-    candidates: List<AutomaticDownloadCandidate>
+    candidates: List<AutomaticDownloadCandidate>,
+    beforeAtomicAdmission: suspend () -> Unit = {}
 ): Set<String> = withContext(Dispatchers.IO) {
-    val store = DownloadStore(context)
+    require(profileId == policy.profileId)
+    val store = DownloadStore(context.filesDir, profileId)
     val queued = store.readDownloadQueue(serverUrl, policy.storageScopeId)
     val queuedIds = queued.mapTo(mutableSetOf()) { it.fileId }
     val remaining = (5 - queued.count { it.origin == DownloadOrigin.AUTOMATIC })
@@ -1089,11 +1127,38 @@ internal suspend fun enqueueAutomaticDownloadBatch(
         entry to attempt
     }
 
-    val entries = store.enqueueDownloadsWithAttempts(
-        requests,
-        maximumAutomaticEntriesPerServer = 5
+    val entries = admitAutomaticDownloadRequests(
+        expectedPolicy = policy,
+        requests = requests,
+        beforeAtomicAdmission = beforeAtomicAdmission,
+        readPolicy = {
+            AutomaticDownloadPolicyStore(context).read(
+                profileId,
+                serverUrl,
+                policy.storageScopeId
+            )
+        },
+        currentOwner = {
+            currentAutomaticDownloadOwnerKey(context, profileId, serverUrl)
+        },
+        persist = { pending ->
+            store.enqueueDownloadsWithAttempts(
+                pending,
+                maximumAutomaticEntriesPerServer = 5
+            )
+        },
+        rollback = { entry ->
+            store.cancelDownloadRequestIfOwned(
+                serverUrl = entry.serverUrl,
+                fileId = entry.fileId,
+                requestId = entry.requestId,
+                storageScopeId = entry.storageScopeId
+            )
+        }
     )
-    DownloadQueuePump.enqueueNext(context, serverUrl, policy.storageScopeId)
+    if (entries.isNotEmpty()) {
+        DownloadQueuePump.enqueueNext(context, serverUrl, policy.storageScopeId)
+    }
     entries.mapTo(mutableSetOf()) { it.fileId }
 }
 
