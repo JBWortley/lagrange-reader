@@ -12,7 +12,9 @@ import androidx.work.testing.TestListenableWorkerBuilder
 import androidx.work.testing.WorkManagerTestInitHelper
 import java.io.File
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -81,7 +83,8 @@ class AutomaticDownloadPlannerWorkerInstrumentedTest {
             start()
         }
         val serverUrl = server.url("/").toString().trimEnd('/')
-        val profileId = "planner-worker-test-${System.nanoTime()}"
+        val profileId = "profile-planner-worker-test-${System.nanoTime()}"
+        val inactiveProfileId = "profile-planner-inactive-test-${System.nanoTime()}"
         val profileStore = ServerProfileStore(context)
         val repository = BookOrbitRepository(context)
         val originalServerUrl = repository.getServerUrl()
@@ -90,7 +93,7 @@ class AutomaticDownloadPlannerWorkerInstrumentedTest {
         val originalActiveProfileId = profilePreferences.getString("active_profile_id", null)
         val browserSnapshotFile = File(context.filesDir, "browser_snapshot.json")
         val originalBrowserSnapshot = browserSnapshotFile.takeIf(File::isFile)?.readBytes()
-        val downloadStore = DownloadStore(context)
+        val downloadStore = DownloadStore(context.filesDir, profileId)
         val storagePolicyPreferences = context.getSharedPreferences(
             "local_book_storage_policy",
             Context.MODE_PRIVATE
@@ -157,7 +160,23 @@ class AutomaticDownloadPlannerWorkerInstrumentedTest {
             assertEquals(policy.generation, attempt.policyGeneration)
             assertTrue(server.requestCount >= 4)
 
+            profileStore.upsert(
+                ServerProfile(
+                    id = inactiveProfileId,
+                    serverUrl = "https://inactive.example.test",
+                    providerId = PROVIDER_BOOKORBIT,
+                    displayName = "Inactive-profile cleanup test"
+                )
+            )
             AutomaticDownloadScheduler.pauseForInactiveProfile(context, policy)
+            withTimeout(5_000L) {
+                while (
+                    downloadStore.readDownloadQueue(serverUrl, storageScopeId).isNotEmpty() ||
+                    downloadStore.readAttempts(serverUrl, storageScopeId).isNotEmpty()
+                ) {
+                    delay(25L)
+                }
+            }
 
             val preservedPolicy = AutomaticDownloadPolicyStore(context)
                 .read(profileId, serverUrl, storageScopeId)
@@ -178,12 +197,7 @@ class AutomaticDownloadPlannerWorkerInstrumentedTest {
                 workManager.cancelAllWorkByTag(downloadServerTag(serverUrl)).result
                     .get(5L, TimeUnit.SECONDS)
             }
-            cleanUp { downloadStore.clearDownloadQueue(serverUrl) }
-            cleanUp {
-                downloadStore.readAttempts(serverUrl).forEach { attempt ->
-                    downloadStore.removeAttempt(serverUrl, attempt.fileId)
-                }
-            }
+            cleanUp { downloadStore.clear() }
             if (originalServerUrl.isNullOrBlank()) {
                 cleanUp { repository.clearSession() }
                 cleanUp { repository.clearServer() }

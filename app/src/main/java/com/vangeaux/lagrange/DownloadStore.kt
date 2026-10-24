@@ -54,8 +54,15 @@ class DownloadStore private constructor(
     private val activeProfileId: () -> String?,
     private val scopeResolver: (String) -> String?
 ) {
-    private companion object {
-        val mutex = Mutex()
+    companion object {
+        private val mutex = Mutex()
+
+        /** Opens one already-resolved legacy or profile storage root without active-profile lookup. */
+        internal fun forStorageRoot(storageRoot: File): DownloadStore = DownloadStore(
+            filesDir = storageRoot,
+            activeProfileId = { null },
+            scopeResolver = { null }
+        )
     }
 
     constructor(context: Context) : this(

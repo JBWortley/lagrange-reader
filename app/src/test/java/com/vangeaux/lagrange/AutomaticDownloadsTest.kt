@@ -1,5 +1,8 @@
 package com.vangeaux.lagrange
 
+import java.io.File
+import java.nio.file.Files
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -8,6 +11,105 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AutomaticDownloadsTest {
+    @Test
+    fun `transfer protection is local to the owning storage root`() {
+        val filesDir = Files.createTempDirectory("automatic-root-candidates").toFile()
+        val firstRoot = File(filesDir, "profiles/first").apply { mkdirs() }
+        val secondRoot = File(filesDir, "profiles/removed").apply { mkdirs() }
+        val firstFile = File(firstRoot, "downloads/book.epub").apply {
+            parentFile?.mkdirs()
+            writeText("first")
+        }
+        val secondFile = File(secondRoot, "downloads/book.epub").apply {
+            parentFile?.mkdirs()
+            writeText("second")
+        }
+        val record = DownloadRecord(
+            serverUrl = "https://example.test",
+            profileId = "profile",
+            storageScopeId = "account",
+            fileId = "file",
+            bookId = "book",
+            title = "Book",
+            localPath = firstFile.absolutePath,
+            mediaKind = MediaKind.EPUB,
+            lastKnownCompleted = true
+        )
+        val queue = DownloadQueueEntry(
+            serverUrl = record.serverUrl,
+            requestId = "request",
+            profileId = record.profileId,
+            storageScopeId = record.storageScopeId,
+            fileId = record.fileId,
+            bookId = record.bookId,
+            libraryId = "library",
+            title = record.title,
+            mediaKind = record.mediaKind,
+            cellularConsentGranted = false,
+            sequence = 1L
+        )
+        val candidates = buildAutomaticEvictionCandidates(
+            inventories = listOf(
+                DownloadStorageInventory(
+                    firstRoot.canonicalPath,
+                    DownloadStore.forStorageRoot(firstRoot),
+                    listOf(record),
+                    listOf(queue),
+                    emptyList()
+                ),
+                DownloadStorageInventory(
+                    secondRoot.canonicalPath,
+                    DownloadStore.forStorageRoot(secondRoot),
+                    listOf(record.copy(localPath = secondFile.absolutePath)),
+                    emptyList(),
+                    emptyList()
+                )
+            ),
+            activeFileIds = emptySet(),
+            readerLeases = emptyList(),
+            incomingProtected = emptySet()
+        )
+
+        assertEquals(1, candidates.size)
+        assertEquals(secondRoot.canonicalPath, candidates.single().storageRootPath)
+        assertEquals(secondFile.length(), candidates.single().sizeBytes)
+    }
+
+    @Test
+    fun `active staged paths include legacy and removed profile roots`() = runBlocking {
+        val filesDir = Files.createTempDirectory("automatic-stage-roots").toFile()
+        val legacyStore = DownloadStore.forStorageRoot(filesDir)
+        val removedRoot = File(filesDir, "profiles/removed").apply { mkdirs() }
+        val removedStore = DownloadStore.forStorageRoot(removedRoot)
+
+        suspend fun addAttempt(store: DownloadStore, root: File, id: String): String {
+            val stage = File(root, "downloads/.$id.part").canonicalPath
+            store.saveAttempt(
+                DownloadAttempt(
+                    serverUrl = "https://example.test",
+                    requestId = "request-$id",
+                    profileId = "profile-$id",
+                    storageScopeId = "account-$id",
+                    fileId = "file-$id",
+                    bookId = "book-$id",
+                    title = "Book $id",
+                    targetPath = File(root, "downloads/$id.epub").canonicalPath,
+                    mediaKind = MediaKind.EPUB,
+                    stagedPath = stage
+                )
+            )
+            return stage
+        }
+
+        val legacyStage = addAttempt(legacyStore, filesDir, "legacy")
+        val removedStage = addAttempt(removedStore, removedRoot, "removed")
+
+        assertEquals(
+            setOf(legacyStage, removedStage),
+            activeDownloadStagedPaths(filesDir)
+        )
+    }
+
     @Test
     fun `automatic downloads require all-libraries or a selected library`() {
         val emptySelection = policy().copy(

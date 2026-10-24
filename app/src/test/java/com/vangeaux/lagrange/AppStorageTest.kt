@@ -8,6 +8,34 @@ import org.junit.Test
 
 class AppStorageTest {
     @Test
+    fun `storage usage includes legacy and every physical profile download root`() = runTest {
+        val filesDir = Files.createTempDirectory("app-storage-profile-roots").toFile()
+        val cacheDir = Files.createTempDirectory("app-storage-profile-cache").toFile()
+        filesDir.resolve("downloads/legacy.epub").apply {
+            requireNotNull(parentFile).mkdirs()
+            writeBytes(ByteArray(11))
+        }
+        filesDir.resolve("profiles/known/downloads/known.epub").apply {
+            requireNotNull(parentFile).mkdirs()
+            writeBytes(ByteArray(13))
+        }
+        filesDir.resolve("profiles/removed/downloads/orphan.epub").apply {
+            requireNotNull(parentFile).mkdirs()
+            writeBytes(ByteArray(17))
+        }
+        filesDir.resolve("profiles/known/not-a-download.bin").apply {
+            requireNotNull(parentFile).mkdirs()
+            writeBytes(ByteArray(19))
+        }
+
+        val roots = managedDownloadStorageRoots(filesDir)
+        val usage = AppStorageManager(filesDir, cacheDir).usage()
+
+        assertEquals(3, roots.size)
+        assertEquals(41L, usage.downloadedBytes)
+    }
+
+    @Test
     fun `storage usage includes offline detail metadata without deleting downloads`() = runTest {
         val filesDir = Files.createTempDirectory("app-storage-files").toFile()
         val cacheDir = Files.createTempDirectory("app-storage-cache").toFile()

@@ -924,8 +924,104 @@ internal data class AutomaticEvictionCandidate(
     val profileId: String = "",
     val storageScopeId: String = "",
     val sourceRevisions: Map<String, Long?> = emptyMap(),
-    val localPaths: Set<String> = emptySet()
+    val localPaths: Set<String> = emptySet(),
+    val storageRootPath: String = ""
 )
+
+internal data class DownloadStorageInventory(
+    val rootPath: String,
+    val store: DownloadStore,
+    val records: List<DownloadRecord>,
+    val queue: List<DownloadQueueEntry>,
+    val attempts: List<DownloadAttempt>
+)
+
+internal data class ProtectedDownloadIdentity(
+    val serverUrl: String,
+    val profileId: String,
+    val storageScopeId: String,
+    val fileId: String
+)
+
+internal suspend fun readDownloadStorageInventories(filesDir: File): List<DownloadStorageInventory> =
+    managedDownloadStorageRoots(filesDir).map { storageRoot ->
+        val store = DownloadStore.forStorageRoot(storageRoot)
+        DownloadStorageInventory(
+            rootPath = storageRoot.path,
+            store = store,
+            records = store.readAll(),
+            queue = store.readDownloadQueue(),
+            attempts = store.readAttempts()
+        )
+    }
+
+internal suspend fun activeDownloadStagedPaths(filesDir: File): Set<String> =
+    managedDownloadStorageRoots(filesDir)
+        .flatMap { storageRoot -> DownloadStore.forStorageRoot(storageRoot).readAttempts() }
+        .mapNotNull { it.stagedPath }
+        .mapNotNull { runCatching { File(it).canonicalPath }.getOrNull() }
+        .toSet()
+
+internal fun buildAutomaticEvictionCandidates(
+    inventories: List<DownloadStorageInventory>,
+    activeFileIds: Set<ProtectedDownloadIdentity>,
+    readerLeases: List<LocalBookReaderLease>,
+    incomingProtected: Set<ProtectedDownloadIdentity>
+): List<AutomaticEvictionCandidate> = inventories.flatMap { inventory ->
+    val queued = inventory.queue.mapTo(mutableSetOf()) {
+        Triple(it.serverUrl, it.storageScopeId, it.fileId)
+    }
+    val attempts = inventory.attempts.mapTo(mutableSetOf()) {
+        Triple(it.serverUrl, it.storageScopeId, it.fileId)
+    }
+    inventory.records.groupBy {
+        listOf(it.serverUrl, it.profileId, it.storageScopeId, it.bookId)
+    }.mapNotNull { (identity, bookRecords) ->
+        val fileIds = bookRecords.mapTo(mutableSetOf()) { it.fileId }
+        val protected = fileIds.any { fileId ->
+            val protectedIdentity = ProtectedDownloadIdentity(
+                serverUrl = normalizeServerUrl(identity[0]).orEmpty(),
+                profileId = identity[1],
+                storageScopeId = identity[2],
+                fileId = fileId
+            )
+            Triple(identity[0], identity[2], fileId) in queued ||
+                Triple(identity[0], identity[2], fileId) in attempts ||
+                protectedIdentity in incomingProtected ||
+                protectedIdentity in activeFileIds
+        }
+        if (protected) return@mapNotNull null
+        val files = bookRecords.map { File(it.localPath) }.distinctBy { it.absolutePath }
+        val protectedByLease = readerLeases.any { lease ->
+            bookRecords.any { record ->
+                localReaderLeaseBlocksReplacement(
+                    lease = lease,
+                    serverUrl = record.serverUrl,
+                    storageScopeId = record.storageScopeId,
+                    fileId = record.fileId,
+                    targetPath = record.localPath
+                )
+            }
+        }
+        if (protectedByLease) return@mapNotNull null
+        AutomaticEvictionCandidate(
+            bookId = identity[3],
+            fileIds = fileIds,
+            sizeBytes = files.sumOf { file -> file.length().coerceAtLeast(0L) },
+            completed = bookRecords.all { it.lastKnownCompleted == true },
+            lastAccessedAtMillis = bookRecords.mapNotNull { it.lastAccessedAtMillis }
+                .maxOrNull() ?: Long.MIN_VALUE,
+            downloadedAtMillis = bookRecords.maxOfOrNull { it.downloadedAtMillis }
+                ?: Long.MIN_VALUE,
+            serverUrl = identity[0],
+            profileId = identity[1],
+            storageScopeId = identity[2],
+            sourceRevisions = bookRecords.associate { it.fileId to it.sourceUpdatedAtMillis },
+            localPaths = files.mapTo(mutableSetOf()) { it.absolutePath },
+            storageRootPath = inventory.rootPath
+        )
+    }
+}
 
 internal fun downloadFileGroupIsProtected(
     fileIds: Set<String>,
@@ -1199,10 +1295,7 @@ internal object AutomaticDownloadStorage {
             )
         }
         val storagePolicy = LocalBookStoragePolicyStore(context).read()
-        val activeStagedPaths = DownloadStore(context).readAttempts()
-            .mapNotNull { it.stagedPath }
-            .mapNotNull { runCatching { File(it).canonicalPath }.getOrNull() }
-            .toSet()
+        val activeStagedPaths = activeDownloadStagedPaths(context.filesDir)
         val allowance = DownloadStorageReservationStore(context).reserve(
             reservationId = reservationId,
             stagedPath = File(stagedPath).canonicalPath,
@@ -1225,10 +1318,7 @@ internal object AutomaticDownloadStorage {
         stagedPath: String
     ): Pair<AutomaticCapacityResult, DownloadStorageAllowance> {
         val storagePolicy = LocalBookStoragePolicyStore(context).read()
-        val activeStagedPaths = DownloadStore(context).readAttempts()
-            .mapNotNull { it.stagedPath }
-            .mapNotNull { runCatching { File(it).canonicalPath }.getOrNull() }
-            .toSet()
+        val activeStagedPaths = activeDownloadStagedPaths(context.filesDir)
         val reservationStore = DownloadStorageReservationStore(context)
         var additional = reservationStore.reserve(
             reservationId = reservationId,
@@ -1294,7 +1384,6 @@ internal object AutomaticDownloadStorage {
         allowRemoval: Boolean
     ): AutomaticCapacityResult = withContext(Dispatchers.IO) {
         val storagePolicy = LocalBookStoragePolicyStore(context).read()
-        val store = DownloadStore(context)
         val usage = AppStorageManager(context).usage()
         var admission = automaticStorageAdmission(
             currentDownloadedBytes = usage.downloadedBytes,
@@ -1312,61 +1401,33 @@ internal object AutomaticDownloadStorage {
             )
         }
 
-        val queued = store.readDownloadQueue().mapTo(mutableSetOf()) {
-            Triple(it.serverUrl, it.storageScopeId, it.fileId)
-        }
-        val attempts = store.readAttempts().mapTo(mutableSetOf()) {
-            Triple(it.serverUrl, it.storageScopeId, it.fileId)
-        }
-        val records = store.readAll()
+        val inventories = readDownloadStorageInventories(context.filesDir)
+        val inventoriesByRoot = inventories.associateBy { it.rootPath }
         val activeFileIds = ActiveReaderStore(context).readAll().mapNotNullTo(mutableSetOf()) { session ->
             session.book.fileId?.let { fileId ->
-                Triple(normalizeServerUrl(session.serverUrl).orEmpty(), session.storageScopeId, fileId)
+                ProtectedDownloadIdentity(
+                    serverUrl = normalizeServerUrl(session.serverUrl).orEmpty(),
+                    profileId = session.profileId,
+                    storageScopeId = session.storageScopeId,
+                    fileId = fileId
+                )
             }
         }
         val readerLeases = LocalBookReaderLeaseStore(context).readLive()
-        val leasedPaths = readerLeases.mapNotNull { lease ->
-            lease.localPath?.let(::File)?.let { runCatching { it.canonicalPath }.getOrNull() }
-        }.toSet()
         val incomingProtected = protectedFileIds.mapTo(mutableSetOf()) {
-            Triple(serverUrl, policy.storageScopeId, it)
-        }
-        val candidates = records.groupBy {
-            listOf(it.serverUrl, it.profileId, it.storageScopeId, it.bookId)
-        }
-            .mapNotNull { (identity, bookRecords) ->
-            val fileIds = bookRecords.mapTo(mutableSetOf()) { it.fileId }
-            val protected = fileIds.any { fileId ->
-                Triple(identity[0], identity[2], fileId) in queued ||
-                    Triple(identity[0], identity[2], fileId) in attempts ||
-                    Triple(identity[0], identity[2], fileId) in incomingProtected ||
-                    Triple(normalizeServerUrl(identity[0]).orEmpty(), identity[2], fileId) in activeFileIds
-            }
-            if (protected) return@mapNotNull null
-            val files = bookRecords.map { File(it.localPath) }.distinctBy { it.absolutePath }
-            if (files.any { file ->
-                    runCatching { file.canonicalPath in leasedPaths }.getOrDefault(false)
-                } || readerLeases.any { lease ->
-                    lease.serverUrl == identity[0] && lease.fileId in fileIds
-                }
-            ) return@mapNotNull null
-            val size = files.sumOf { file -> file.length().coerceAtLeast(0L) }
-            AutomaticEvictionCandidate(
-                bookId = identity[3],
-                fileIds = fileIds,
-                sizeBytes = size,
-                completed = bookRecords.all { it.lastKnownCompleted == true },
-                lastAccessedAtMillis = bookRecords.mapNotNull { it.lastAccessedAtMillis }
-                    .maxOrNull() ?: Long.MIN_VALUE,
-                downloadedAtMillis = bookRecords.maxOfOrNull { it.downloadedAtMillis }
-                    ?: Long.MIN_VALUE,
-                serverUrl = identity[0],
-                profileId = identity[1],
-                storageScopeId = identity[2],
-                sourceRevisions = bookRecords.associate { it.fileId to it.sourceUpdatedAtMillis },
-                localPaths = files.mapTo(mutableSetOf()) { it.absolutePath }
+            ProtectedDownloadIdentity(
+                serverUrl = normalizeServerUrl(serverUrl).orEmpty(),
+                profileId = profileId,
+                storageScopeId = policy.storageScopeId,
+                fileId = it
             )
         }
+        val candidates = buildAutomaticEvictionCandidates(
+            inventories = inventories,
+            activeFileIds = activeFileIds,
+            readerLeases = readerLeases,
+            incomingProtected = incomingProtected
+        )
         val plan = selectAutomaticEvictions(candidates, admission.requiredReclaimBytes)
         if (!evictionPlanCanSatisfy(plan, admission.requiredReclaimBytes)) {
             return@withContext AutomaticCapacityResult(
@@ -1377,6 +1438,7 @@ internal object AutomaticDownloadStorage {
         val removed = mutableSetOf<String>()
         val suppressionStore = AutomaticDownloadSuppressionStore(context)
         for (candidate in plan) {
+            val candidateStore = inventoriesByRoot[candidate.storageRootPath]?.store ?: continue
             var policyChanged = false
             val deletion = localCopyDeletionGuard.withLock {
                 val latestPolicy = LocalBookStoragePolicyStore(context).read()
@@ -1411,7 +1473,7 @@ internal object AutomaticDownloadStorage {
                         storageScopeId = candidate.storageScopeId
                     )
                 }
-                store.deleteGroupIfNotQueuedOrAttempted(
+                candidateStore.deleteGroupIfNotQueuedOrAttempted(
                     candidate.serverUrl,
                     candidate.fileIds,
                     candidate.storageScopeId
@@ -2319,7 +2381,7 @@ private suspend fun removeAutomaticTransfersThroughGeneration(
     maximumGeneration: Long
 ) = withContext(Dispatchers.IO) {
     if (maximumGeneration < 0L) return@withContext
-    val store = DownloadStore(context)
+    val store = DownloadStore(context.filesDir, profileId)
     val removed = store.removeAutomaticQueueThroughGeneration(
         serverUrl,
         profileId,

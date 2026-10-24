@@ -16,6 +16,49 @@ import org.junit.Test
 
 class DownloadStoreTest {
     @Test
+    fun `explicit storage root deletes only records owned by that root`() = runBlocking {
+        val filesDir = Files.createTempDirectory("download-store-root-delete").toFile()
+        val firstRoot = File(filesDir, "profiles/first").apply { mkdirs() }
+        val secondRoot = File(filesDir, "profiles/second").apply { mkdirs() }
+        val firstStore = DownloadStore.forStorageRoot(firstRoot)
+        val secondStore = DownloadStore.forStorageRoot(secondRoot)
+        val serverUrl = "https://example.test"
+        val storageScopeId = "account"
+        val firstFile = File(firstRoot, "downloads/book.epub").apply {
+            parentFile?.mkdirs()
+            writeText("first")
+        }
+        val secondFile = File(secondRoot, "downloads/book.epub").apply {
+            parentFile?.mkdirs()
+            writeText("second")
+        }
+        val record = DownloadRecord(
+            serverUrl = serverUrl,
+            profileId = "profile",
+            storageScopeId = storageScopeId,
+            fileId = "file",
+            bookId = "book",
+            title = "Book",
+            localPath = firstFile.absolutePath,
+            mediaKind = MediaKind.EPUB
+        )
+        firstStore.save(record)
+        secondStore.save(record.copy(localPath = secondFile.absolutePath))
+
+        val result = firstStore.deleteGroupIfNotQueuedOrAttempted(
+            serverUrl,
+            setOf("file"),
+            storageScopeId
+        )
+
+        assertEquals(setOf("file"), result.deletedFileIds)
+        assertFalse(firstFile.exists())
+        assertTrue(secondFile.isFile)
+        assertTrue(firstStore.readAll(serverUrl, storageScopeId).isEmpty())
+        assertEquals(1, secondStore.readAll(serverUrl, storageScopeId).size)
+    }
+
+    @Test
     fun `cancellation gate closes the callback-before-persistence race`() = runBlocking {
         val gate = DownloadRequestCancellationGate()
         val checked = CompletableDeferred<Unit>()
