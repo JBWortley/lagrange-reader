@@ -2906,6 +2906,46 @@ class AppCoordinatorTest {
     }
 
     @Test
+    fun `mark as read refreshes BookOrbit provider owned On Deck shelf`() = runTest {
+        val current = book.copy(
+            readStatus = BookReadStatus.READING,
+            progressPercent = 42f
+        )
+        val replacement = book.copy(id = "book-2", title = "Next book")
+        val repository = FakeBookOrbitDataSource(
+            homeShelvesResult = HomeShelfData(
+                booksBySection = mapOf(HomeSection.ON_DECK to listOf(replacement))
+            )
+        )
+        val coordinator = AppCoordinator(
+            repository,
+            StandardTestDispatcher(testScheduler),
+            homeShelfModuleResolver = { resolveProviderHomeShelfModule(it) }
+        )
+        coordinator.bootstrapIntoBrowser(
+            BrowserState(
+                serverUrl = serverUrl,
+                libraries = listOf(library),
+                selectedLibraryId = library.id,
+                books = listOf(current),
+                homeShelves = HomeShelfData(
+                    booksBySection = mapOf(HomeSection.ON_DECK to listOf(current))
+                )
+            )
+        )
+
+        coordinator.markBookAsRead(current)
+        advanceUntilIdle()
+
+        val browser = coordinator.screen.value as AppScreen.Browser
+        assertEquals(1, repository.loadHomeShelvesCalls)
+        assertEquals(
+            listOf(replacement),
+            browser.browserState.homeShelves.booksBySection[HomeSection.ON_DECK]
+        )
+    }
+
+    @Test
     fun `selecting an intermediate status updates repository and browser without clearing progress`() = runTest {
         val current = book.copy(
             progressLabel = "42%",
