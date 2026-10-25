@@ -1588,6 +1588,263 @@ class BookOrbitAppInstrumentedTest {
     }
 
     @Test
+    fun automaticDownloadsRemainDisabledUntilBothConfirmationsComplete() {
+        val policy = mutableStateOf(
+            AutomaticDownloadPolicy(
+                profileId = "profile",
+                serverUrl = "https://books.example.test",
+                storageScopeId = "account",
+                scope = AutomaticDownloadScope.ALL_LIBRARIES
+            )
+        )
+        var saves = 0
+        composeRule.setContent {
+            BookOrbitTheme {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                    AutomaticBookDownloadConfiguration(
+                        policy = policy.value,
+                        libraries = listOf(LibrarySummary("books", "Books")),
+                        status = AutomaticDownloadStatus(),
+                        onPolicyChange = {
+                            saves += 1
+                            policy.value = it
+                        },
+                        onSyncNow = {},
+                        onCancel = {}
+                    )
+                }
+            }
+        }
+
+        composeRule.onNodeWithTag("automatic-download-reserve")
+            .performScrollTo().performTextReplacement("0.5")
+        composeRule.onNodeWithTag("automatic-download-maximum")
+            .performScrollTo().performTextReplacement("0")
+        composeRule.onNodeWithTag("automatic-download-enabled").performScrollTo().performClick()
+        composeRule.onNodeWithTag("automatic-download-review-dialog").assertIsDisplayed()
+        composeRule.onNodeWithText("Reserved minimum free space: 0.5 GB").assertIsDisplayed()
+        composeRule.onNodeWithText("Maximum local-book storage: No limit").assertIsDisplayed()
+        composeRule.runOnIdle {
+            assertEquals(0, saves)
+            assertEquals(false, policy.value.enabled)
+        }
+
+        composeRule.onNodeWithTag("automatic-download-review-continue").performClick()
+        composeRule.onNodeWithTag("automatic-download-consent-dialog").assertIsDisplayed()
+        composeRule.runOnIdle { assertEquals(0, saves) }
+        composeRule.onNodeWithTag("automatic-download-confirm-enable").performClick()
+        composeRule.runOnIdle {
+            assertEquals(1, saves)
+            assertEquals(true, policy.value.enabled)
+            assertEquals(512L * 1024L * 1024L, policy.value.reserveBytes)
+            assertEquals(0L, policy.value.maximumBytes)
+        }
+    }
+
+    @Test
+    fun cancellingAutomaticDownloadConfirmationIsInertAndEmptyScopeIsBlocked() {
+        val policy = mutableStateOf(
+            AutomaticDownloadPolicy(
+                profileId = "profile",
+                serverUrl = "https://books.example.test",
+                storageScopeId = "account"
+            )
+        )
+        var saves = 0
+        composeRule.setContent {
+            BookOrbitTheme {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                    AutomaticBookDownloadConfiguration(
+                        policy = policy.value,
+                        libraries = emptyList(),
+                        status = AutomaticDownloadStatus(),
+                        onPolicyChange = { saves += 1; policy.value = it },
+                        onSyncNow = {},
+                        onCancel = {}
+                    )
+                }
+            }
+        }
+
+        composeRule.onNodeWithTag("automatic-download-enabled").performScrollTo().performClick()
+        composeRule.onNodeWithTag("automatic-download-activation-error").assertIsDisplayed()
+        composeRule.onAllNodesWithTag("automatic-download-review-dialog").assertCountEquals(0)
+        composeRule.runOnIdle { assertEquals(0, saves) }
+
+        composeRule.onNodeWithTag("automatic-download-scope-all").performScrollTo().performClick()
+        composeRule.runOnIdle { assertEquals(1, saves) }
+        saves = 0
+        composeRule.onNodeWithTag("automatic-download-enabled").performScrollTo().performClick()
+        composeRule.onNodeWithTag("automatic-download-review-continue").performClick()
+        pressBack()
+        composeRule.onAllNodesWithTag("automatic-download-consent-dialog").assertCountEquals(0)
+        composeRule.runOnIdle {
+            assertEquals(0, saves)
+            assertEquals(false, policy.value.enabled)
+        }
+    }
+
+    @Test
+    fun automaticCleanupRequiresConfirmationEvenWhenDownloadsAreDisabled() {
+        val policy = mutableStateOf(
+            AutomaticDownloadPolicy(
+                profileId = "profile",
+                serverUrl = "https://books.example.test",
+                storageScopeId = "account"
+            )
+        )
+        var saves = 0
+        composeRule.setContent {
+            BookOrbitTheme {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                    AutomaticBookDownloadConfiguration(
+                        policy = policy.value,
+                        libraries = emptyList(),
+                        status = AutomaticDownloadStatus(),
+                        onPolicyChange = { saves += 1; policy.value = it },
+                        onSyncNow = {},
+                        onCancel = {}
+                    )
+                }
+            }
+        }
+
+        composeRule.onNodeWithTag("automatic-download-removal").performScrollTo().performClick()
+        composeRule.onNodeWithTag("automatic-download-risk-dialog").assertIsDisplayed()
+        composeRule.runOnIdle { assertEquals(0, saves) }
+        composeRule.onNodeWithTag("automatic-download-confirm-risky-change").performClick()
+        composeRule.runOnIdle {
+            assertEquals(1, saves)
+            assertEquals(true, policy.value.automaticRemovalEnabled)
+        }
+    }
+
+    @Test
+    fun automaticDownloadEnableConfirmationRejectsChangedAccountOwner() {
+        val policy = mutableStateOf(
+            AutomaticDownloadPolicy(
+                profileId = "profile",
+                serverUrl = "https://books.example.test",
+                storageScopeId = "account-a",
+                scope = AutomaticDownloadScope.ALL_LIBRARIES
+            )
+        )
+        val liveOwner = mutableStateOf(policy.value.ownerKey())
+        var saves = 0
+        composeRule.setContent {
+            BookOrbitTheme {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                    AutomaticBookDownloadConfiguration(
+                        policy = policy.value,
+                        libraries = listOf(LibrarySummary("books", "Books")),
+                        status = AutomaticDownloadStatus(),
+                        onPolicyChange = { saves += 1; policy.value = it },
+                        ownerIsCurrent = {
+                            automaticDownloadOwnersMatch(it, liveOwner.value)
+                        },
+                        onSyncNow = {},
+                        onCancel = {}
+                    )
+                }
+            }
+        }
+
+        composeRule.onNodeWithTag("automatic-download-enabled").performScrollTo().performClick()
+        composeRule.onNodeWithTag("automatic-download-review-continue").performClick()
+        composeRule.runOnIdle {
+            liveOwner.value = liveOwner.value.copy(storageScopeId = "account-b")
+        }
+        composeRule.onNodeWithTag("automatic-download-confirm-enable").performClick()
+
+        composeRule.onAllNodesWithTag("automatic-download-consent-dialog").assertCountEquals(0)
+        composeRule.onNodeWithTag("automatic-download-activation-error").assertIsDisplayed()
+        composeRule.runOnIdle {
+            assertEquals(0, saves)
+            assertEquals(false, policy.value.enabled)
+        }
+    }
+
+    @Test
+    fun automaticDownloadRiskConfirmationRejectsChangedProfileOwner() {
+        val policy = mutableStateOf(
+            AutomaticDownloadPolicy(
+                profileId = "profile-a",
+                serverUrl = "https://books.example.test",
+                storageScopeId = "account-a",
+                automaticRemovalEnabled = false
+            )
+        )
+        val liveOwner = mutableStateOf(policy.value.ownerKey())
+        var saves = 0
+        composeRule.setContent {
+            BookOrbitTheme {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                    AutomaticBookDownloadConfiguration(
+                        policy = policy.value,
+                        libraries = emptyList(),
+                        status = AutomaticDownloadStatus(),
+                        onPolicyChange = { saves += 1; policy.value = it },
+                        ownerIsCurrent = {
+                            automaticDownloadOwnersMatch(it, liveOwner.value)
+                        },
+                        onSyncNow = {},
+                        onCancel = {}
+                    )
+                }
+            }
+        }
+
+        composeRule.onNodeWithTag("automatic-download-removal").performScrollTo().performClick()
+        composeRule.runOnIdle {
+            liveOwner.value = liveOwner.value.copy(profileId = "profile-b")
+        }
+        composeRule.onNodeWithTag("automatic-download-confirm-risky-change").performClick()
+
+        composeRule.onAllNodesWithTag("automatic-download-risk-dialog").assertCountEquals(0)
+        composeRule.onNodeWithTag("automatic-download-activation-error").assertIsDisplayed()
+        composeRule.runOnIdle {
+            assertEquals(0, saves)
+            assertEquals(false, policy.value.automaticRemovalEnabled)
+        }
+    }
+
+    @Test
+    fun automaticDownloadConfirmationDisappearsWhenComposedOwnerChanges() {
+        val policy = mutableStateOf(
+            AutomaticDownloadPolicy(
+                profileId = "profile-a",
+                serverUrl = "https://books.example.test",
+                storageScopeId = "account-a",
+                scope = AutomaticDownloadScope.ALL_LIBRARIES
+            )
+        )
+        composeRule.setContent {
+            BookOrbitTheme {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                    AutomaticBookDownloadConfiguration(
+                        policy = policy.value,
+                        libraries = listOf(LibrarySummary("books", "Books")),
+                        status = AutomaticDownloadStatus(),
+                        onPolicyChange = { policy.value = it },
+                        onSyncNow = {},
+                        onCancel = {}
+                    )
+                }
+            }
+        }
+
+        composeRule.onNodeWithTag("automatic-download-enabled").performScrollTo().performClick()
+        composeRule.onNodeWithTag("automatic-download-review-dialog").assertIsDisplayed()
+        composeRule.runOnIdle {
+            policy.value = policy.value.copy(
+                profileId = "profile-b",
+                storageScopeId = "account-b"
+            )
+        }
+        composeRule.onAllNodesWithTag("automatic-download-review-dialog").assertCountEquals(0)
+    }
+
+    @Test
     fun optionsCategoryNavigationShowsControlsAndBackReturnsToRoot() {
         composeRule.setContent {
             BookOrbitTheme {
@@ -2463,7 +2720,11 @@ internal class InstrumentedFakeDataSource : BookOrbitDataSource {
         resetReadingStateBooks += book
     }
     override suspend fun restoreActiveReaderState(localOnly: Boolean): ReaderState? = null
-    override suspend fun downloadBook(book: BookSummary, onProgress: (Float?) -> Unit): File {
+    override suspend fun downloadBook(
+        book: BookSummary,
+        storageScopeId: String?,
+        onProgress: (Float?) -> Unit
+    ): File {
         downloadedBooks += book
         return File("unused")
     }
