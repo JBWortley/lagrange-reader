@@ -1105,6 +1105,7 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
             )
         }
         footerView = ComposeView(this).apply {
+            visibility = View.GONE
             setContent {
                 EpubReaderMaterialTheme(selectedTheme) {
                     EpubReaderProgressFooter(
@@ -1182,7 +1183,7 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
                             status = "Chapter ${currentChapter + 1}/${chapterTitles.size.coerceAtLeast(1)} · " +
                                 "Page ${currentPage + 1}/${currentPageCount.coerceAtLeast(1)}",
                             preferences = readerPreferences,
-                            onContinueReading = ::hideOptions,
+                            onContinueReading = ::continueReading,
                             onCloseBook = ::finishReader,
                             onPreferencesChange = ::applyReaderPreferences,
                             showTapZoneTutorialAfterChanges = showTapZoneTutorialAfterChanges,
@@ -1317,6 +1318,7 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
             listOf(audioPlayerOverlay, mediaOverlayView, ttsView)
         )
         setContentView(rootView)
+        syncProgressFooter()
         readerViewport.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyReaderPadding() }
         ViewCompat.requestApplyInsets(readerViewport)
     }
@@ -1330,6 +1332,7 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
         optionsView.visibility = if (
             savedInstanceState.getBoolean(STATE_READER_OPTIONS_VISIBLE)
         ) View.VISIBLE else View.GONE
+        syncProgressFooter()
     }
 
     private fun discardRestoredNavigatorIfNeeded(savedInstanceState: Bundle?) {
@@ -2978,6 +2981,7 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
         fontScale = normalized.fontScale
         readingDirection = normalized.readingDirection
         epubLayoutMode = normalized.epubLayoutMode
+        syncProgressFooter()
         themeStore.save(normalized.theme)
         rootView.setBackgroundColor(normalized.theme.backgroundColor)
         readerViewport.setBackgroundColor(normalized.theme.backgroundColor)
@@ -3092,8 +3096,24 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
             horizontal(leftPercent),
             effectiveReaderTopSpace(normalTopPadding, occupiedBannerBottom, isPreview),
             horizontal(rightPercent),
-            vertical(padding.bottom) + dpToPx(EPUB_READER_PROGRESS_FOOTER_HEIGHT_DP)
+            vertical(padding.bottom) + if (readerPreferences.showPageProgress) {
+                dpToPx(EPUB_READER_PROGRESS_FOOTER_HEIGHT_DP)
+            } else {
+                0
+            }
         )
+    }
+
+    private fun syncProgressFooter() {
+        if (!::footerView.isInitialized) return
+        val controlsVisible = ::chromeView.isInitialized && chromeView.visibility == View.VISIBLE
+        footerView.visibility = if (readerPreferences.showPageProgress || controlsVisible) {
+            View.VISIBLE
+        } else {
+            View.GONE
+        }
+        if (controlsVisible) footerView.bringToFront()
+        applyReaderPadding()
     }
 
     private fun toggleChrome() {
@@ -3103,19 +3123,26 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
     private fun showChrome() {
         hideOptions()
         chromeView.visibility = View.VISIBLE
+        syncProgressFooter()
     }
 
     private fun hideChrome() {
         chromeView.visibility = View.GONE
+        syncProgressFooter()
     }
 
     private fun showOptions() {
-        hideChrome()
         optionsView.visibility = View.VISIBLE
+        optionsView.bringToFront()
     }
 
     private fun hideOptions() {
         optionsView.visibility = View.GONE
+    }
+
+    private fun continueReading() {
+        hideOptions()
+        hideChrome()
     }
 
     private fun enableReadMode() {
@@ -3165,6 +3192,19 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
         ::tapZoneTutorialView.isInitialized && tapZoneTutorialView.visibility == View.VISIBLE
 
     internal fun hasShownTapZoneTutorial(): Boolean = tapZoneTutorialHasShown
+
+    internal fun isProgressFooterVisible(): Boolean =
+        ::footerView.isInitialized && footerView.visibility == View.VISIBLE
+
+    internal fun setShowPageProgressForTest(enabled: Boolean) {
+        applyReaderPreferences(readerPreferences.copy(showPageProgress = enabled))
+    }
+
+    internal fun showReaderOptionsForTest() = showOptions()
+
+    internal fun hideReaderOptionsForTest() = hideOptions()
+
+    internal fun readerContentBottomPaddingForTest(): Int = readerContainer.paddingBottom
 
     internal fun isTwoPageSpreadActive(): Boolean = twoPageSpreadActive
 

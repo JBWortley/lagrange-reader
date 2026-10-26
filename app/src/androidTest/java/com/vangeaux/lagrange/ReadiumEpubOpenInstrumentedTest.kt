@@ -757,13 +757,20 @@ class ReadiumEpubOpenInstrumentedTest {
             assertTrue("Readium navigator did not become ready", navigatorReady)
             var tutorialWasShown = false
             var tutorialVisible = false
+            var normalReadingPadding = 0
             scenario.onActivity { activity ->
                 tutorialWasShown = activity.hasShownTapZoneTutorial()
                 tutorialVisible = activity.isTapZoneTutorialVisible()
             }
             assertTrue("EPUB tap-zone tutorial was not shown on reader entry", tutorialWasShown)
             SystemClock.sleep(READER_TAP_ZONE_TUTORIAL_DURATION_MILLIS + 250L)
-            scenario.onActivity { activity -> tutorialVisible = activity.isTapZoneTutorialVisible() }
+            scenario.onActivity {
+                tutorialVisible = it.isTapZoneTutorialVisible()
+                it.setShowPageProgressForTest(false)
+                assertEquals(false, it.isProgressFooterVisible())
+                it.setShowPageProgressForTest(true)
+                normalReadingPadding = it.readerContentBottomPaddingForTest()
+            }
             assertEquals(false, tutorialVisible)
             var tapX = 0f
             var tapY = 0f
@@ -792,6 +799,16 @@ class ReadiumEpubOpenInstrumentedTest {
             scenario.onActivity { activity ->
                 controlsVisible = activity.areLightweightControlsVisible()
                 optionsVisible = activity.areReaderOptionsVisible()
+                assertTrue("EPUB progress footer did not overlay reader controls", activity.isProgressFooterVisible())
+                assertEquals(normalReadingPadding, activity.readerContentBottomPaddingForTest())
+                val paddingBeforeOptions = activity.readerContentBottomPaddingForTest()
+                activity.showReaderOptionsForTest()
+                assertEquals(true, activity.areReaderOptionsVisible())
+                assertEquals(paddingBeforeOptions, activity.readerContentBottomPaddingForTest())
+                activity.hideReaderOptionsForTest()
+                assertEquals(false, activity.areReaderOptionsVisible())
+                assertEquals(true, activity.areLightweightControlsVisible())
+                assertEquals(paddingBeforeOptions, activity.readerContentBottomPaddingForTest())
             }
             assertTrue("Center tap did not open the lightweight reader chrome", controlsVisible)
             assertEquals(false, optionsVisible)
