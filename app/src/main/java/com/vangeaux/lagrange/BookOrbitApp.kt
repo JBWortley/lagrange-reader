@@ -1225,7 +1225,8 @@ internal data class ReaderTapZoneTutorialRegion(
     val red: Int,
     val green: Int,
     val blue: Int,
-    val alpha: Float
+    val alpha: Float,
+    val useDarkLabel: Boolean = false
 )
 
 private fun readerTapZoneTutorialRegion(
@@ -1236,7 +1237,7 @@ private fun readerTapZoneTutorialRegion(
         when (region.action) {
             ReaderTapZoneAction.PREVIOUS -> Triple(197, 26, 26)
             ReaderTapZoneAction.MENU -> Triple(0, 63, 143)
-            ReaderTapZoneAction.NEXT -> Triple(0, 122, 61)
+            ReaderTapZoneAction.NEXT -> Triple(255, 193, 7)
         }
     } else {
         when (region.action) {
@@ -1252,7 +1253,8 @@ private fun readerTapZoneTutorialRegion(
         red = red,
         green = green,
         blue = blue,
-        alpha = if (highContrast) 1f else 0.5f
+        alpha = if (highContrast) 1f else 0.5f,
+        useDarkLabel = highContrast && region.action == ReaderTapZoneAction.NEXT
     )
 }
 
@@ -1376,7 +1378,7 @@ private fun ReaderTapZoneTutorialRegion(
     ) {
         Text(
             text = stringResource(region.labelRes),
-            color = Color.White,
+            color = if (region.useDarkLabel) Color.Black else Color.White,
             fontWeight = FontWeight.Bold,
             fontSize = READER_TAP_ZONE_TUTORIAL_LABEL_FONT_SIZE_SP.sp
         )

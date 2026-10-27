@@ -57,11 +57,12 @@ class ReaderTapZoneTutorialTest {
             listOf(
                 listOf(197, 26, 26),
                 listOf(0, 63, 143),
-                listOf(0, 122, 61)
+                listOf(255, 193, 7)
             ),
             regions.map { listOf(it.red, it.green, it.blue) }
         )
         regions.forEach { region -> assertEquals(1f, region.alpha) }
+        assertEquals(listOf(false, false, true), regions.map { it.useDarkLabel })
     }
     @Test
     fun `tutorial follows the selected library reading direction`() {
