@@ -16,6 +16,46 @@ import org.junit.Test
 
 class DownloadStoreTest {
     @Test
+    fun `portable retry does not delete a recreated document with the same uri`() {
+        val stageUri = "content://downloads/tree/card%3ABooks/document/card%3ABooks%2Fbook.epub"
+        val current = DownloadAttempt(
+            serverUrl = "https://example.test",
+            requestId = "same-request",
+            profileId = "profile-1",
+            storageScopeId = "account-1",
+            fileId = "file-1",
+            bookId = "book-1",
+            title = "Book",
+            targetPath = stageUri,
+            storageTreeUri = "content://downloads/tree/card%3ABooks",
+            storageRootUri = "content://downloads/tree/card%3ABooks/document/card%3ABooks",
+            mediaKind = MediaKind.EPUB,
+            state = DownloadAttemptState.STAGING,
+            stagedPath = stageUri
+        )
+        val retry = current.copy(
+            state = DownloadAttemptState.QUEUED,
+            stagedPath = null
+        )
+
+        assertTrue(replacementRetainsStagedLocator(current, retry))
+        assertFalse(
+            replacementRetainsStagedLocator(
+                current,
+                retry.copy(requestId = "replacement-request")
+            )
+        )
+        assertFalse(
+            replacementRetainsStagedLocator(
+                current,
+                retry.copy(
+                    targetPath = "content://downloads/tree/card%3ABooks/document/card%3ABooks%2Fnew.epub"
+                )
+            )
+        )
+    }
+
+    @Test
     fun `portable download metadata survives store round trip without filesystem pruning`() = runBlocking {
         val filesDir = Files.createTempDirectory("download-store-portable-record").toFile()
         val store = DownloadStore(filesDir)

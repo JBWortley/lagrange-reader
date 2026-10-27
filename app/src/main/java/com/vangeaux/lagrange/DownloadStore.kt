@@ -15,6 +15,17 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 private fun requestIdsMatch(current: String, expected: String): Boolean = current == expected
 
+internal fun replacementRetainsStagedLocator(
+    current: DownloadAttempt,
+    replacement: DownloadAttempt
+): Boolean {
+    if (!requestIdsMatch(current.requestId, replacement.requestId)) return false
+    val staged = current.stagedPath ?: return false
+    return sequenceOf(replacement.targetPath, replacement.stagedPath)
+        .filterNotNull()
+        .any { locator -> localDownloadLocatorsMatch(staged, locator) }
+}
+
 internal fun downloadStorageScopeId(
     context: Context,
     serverUrl: String,
@@ -221,7 +232,11 @@ class DownloadStore private constructor(
                 it.serverUrl == scopedAttempt.serverUrl &&
                     it.storageScopeId == scopedAttempt.storageScopeId &&
                     it.fileId == scopedAttempt.fileId
-            }.forEach(::deleteStagedFileIfOwned)
+            }
+            .filterNot { current ->
+                replacementRetainsStagedLocator(current, scopedAttempt)
+            }
+            .forEach(::deleteStagedFileIfOwned)
         val remaining = attempts.filterNot {
             it.serverUrl == scopedAttempt.serverUrl &&
                 it.storageScopeId == scopedAttempt.storageScopeId &&
