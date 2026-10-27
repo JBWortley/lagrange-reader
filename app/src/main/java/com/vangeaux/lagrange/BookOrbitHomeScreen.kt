@@ -3784,6 +3784,36 @@ internal fun OptionsScreen(
         BackgroundRefreshNetworkPolicy.values().toList(),
         BackgroundRefreshNetworkPolicy::displayNameRes
     )
+    val downloadStorageSelectionStore = remember(context) {
+        DownloadStorageSelectionStore(context)
+    }
+    var downloadStorageSelection by remember {
+        mutableStateOf(downloadStorageSelectionStore.read())
+    }
+    var downloadStorageMessage by remember { mutableStateOf<String?>(null) }
+    val downloadFolderLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    runCatching { downloadStorageSelectionStore.select(uri) }
+                }
+                result.onSuccess { selection ->
+                    downloadStorageSelection = selection
+                    downloadStorageMessage = context.getString(
+                        R.string.settings_download_location_new_downloads,
+                        selection.displayName
+                            ?: context.getString(R.string.settings_download_location_selected_folder)
+                    )
+                    storageRefreshKey += 1
+                }.onFailure { error ->
+                    downloadStorageMessage = error.message
+                        ?: context.getString(R.string.settings_download_location_select_failed)
+                }
+            }
+        }
+    }
     val automaticProfileId = profileId ?: serverProfileId(serverUrl)
     val automaticStorageScopeId =
         downloadStorageScopeId(context, serverUrl, automaticProfileId) ?: "unresolved-account"
@@ -3841,6 +3871,16 @@ internal fun OptionsScreen(
     }
     val storageUsage by produceState<StorageUsage?>(initialValue = null, storageRefreshKey) {
         value = runCatching { storageUsageLoader() }.getOrNull()
+    }
+    val portableStorageStatus by produceState<Pair<PortableStorageAvailability, Long?>?>(
+        initialValue = null,
+        downloadStorageSelection,
+        storageRefreshKey
+    ) {
+        value = withContext(Dispatchers.IO) {
+            downloadStorageSelectionStore.availability(downloadStorageSelection) to
+                downloadStorageSelectionStore.availableBytes(downloadStorageSelection)
+        }
     }
     val offlineCacheStatus by produceState(
         initialValue = OfflineCacheStatus(),
@@ -4097,6 +4137,90 @@ internal fun OptionsScreen(
                 onClick = { openDialog = OptionsDialog.CELLULAR_DOWNLOADS }
             )
         }
+        if (selectedCategory == OptionsCategory.DOWNLOADS_OFFLINE) item(key = "download-location") {
+            val availability = portableStorageStatus?.first
+                ?: PortableStorageAvailability.TEMPORARILY_UNAVAILABLE
+            val availableBytes = portableStorageStatus?.second
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_download_location_title)) },
+                supportingContent = {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            if (downloadStorageSelection.usesPortableFolder) {
+                                downloadStorageSelection.displayName
+                                    ?: stringResource(R.string.settings_download_location_selected_folder)
+                            } else {
+                                stringResource(R.string.settings_download_location_internal)
+                            }
+                        )
+                        if (downloadStorageSelection.usesPortableFolder) {
+                            Text(
+                                when (availability) {
+                                    PortableStorageAvailability.AVAILABLE -> availableBytes?.let {
+                                        stringResource(
+                                            R.string.settings_download_location_available,
+                                            formatByteSize(it)
+                                        )
+                                    } ?: stringResource(R.string.settings_download_location_available_unknown)
+                                    PortableStorageAvailability.PERMISSION_REVOKED ->
+                                        stringResource(R.string.settings_download_location_permission_revoked)
+                                    PortableStorageAvailability.TEMPORARILY_UNAVAILABLE ->
+                                        stringResource(R.string.settings_download_location_unavailable)
+                                    PortableStorageAvailability.NOT_CONFIGURED ->
+                                        stringResource(R.string.settings_download_location_internal)
+                                },
+                                color = if (availability == PortableStorageAvailability.AVAILABLE) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                } else {
+                                    MaterialTheme.colorScheme.error
+                                },
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        Text(
+                            stringResource(R.string.settings_download_location_existing_stay),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        downloadStorageMessage?.let { message ->
+                            Text(
+                                message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                },
+                trailingContent = {
+                    Column(horizontalAlignment = Alignment.End) {
+                        TextButton(
+                            onClick = {
+                                downloadStorageMessage = null
+                                downloadFolderLauncher.launch(
+                                    downloadStorageSelection.treeUri?.let(Uri::parse)
+                                )
+                            },
+                            modifier = Modifier.testTag("options-choose-download-folder")
+                        ) { Text(stringResource(R.string.settings_download_location_choose_folder)) }
+                        if (downloadStorageSelection.usesPortableFolder) {
+                            TextButton(
+                                onClick = {
+                                    downloadStorageSelection =
+                                        downloadStorageSelectionStore.useInternalStorage()
+                                    downloadStorageMessage = context.getString(
+                                        R.string.settings_download_location_new_downloads_internal
+                                    )
+                                    storageRefreshKey += 1
+                                },
+                                modifier = Modifier.testTag("options-use-internal-download-storage")
+                            ) { Text(stringResource(R.string.settings_download_location_use_internal)) }
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().testTag("options-download-location")
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        }
         if (selectedCategory == OptionsCategory.DOWNLOADS_OFFLINE) item(key = "storage") {
             ListItem(
                 headlineContent = { Text(stringResource(R.string.settings_storage)) },
@@ -4181,6 +4305,11 @@ internal fun OptionsScreen(
             AutomaticBookDownloadConfiguration(
                 policy = automaticPolicy,
                 libraries = libraries,
+                downloadLocationName = if (downloadStorageSelection.usesPortableFolder) {
+                    downloadStorageSelection.displayName ?: "Selected SD-card folder"
+                } else {
+                    "Internal app storage"
+                },
                 status = automaticStatus,
                 onPolicyChange = saveAutomaticPolicy,
                 ownerIsCurrent = { candidateOwner ->
@@ -4517,6 +4646,7 @@ internal fun OptionsScreen(
 internal fun AutomaticBookDownloadConfiguration(
     policy: AutomaticDownloadPolicy,
     libraries: List<LibrarySummary>,
+    downloadLocationName: String = "Internal app storage",
     status: AutomaticDownloadStatus,
     onPolicyChange: (AutomaticDownloadPolicy) -> Unit,
     ownerIsCurrent: (AutomaticDownloadOwnerKey) -> Boolean = { true },
@@ -4884,7 +5014,8 @@ internal fun AutomaticBookDownloadConfiguration(
                     ) {
                         automaticDownloadLocalizedReviewLines(
                             confirmation.policy,
-                            libraries
+                            libraries,
+                            downloadLocationName
                         ).forEach { line ->
                             Text(line)
                         }
@@ -5010,7 +5141,8 @@ internal fun AutomaticDownloadPolicy.hasAutomaticDownloadScope(): Boolean =
 @Composable
 private fun automaticDownloadLocalizedReviewLines(
     policy: AutomaticDownloadPolicy,
-    libraries: List<LibrarySummary>
+    libraries: List<LibrarySummary>,
+    downloadLocationName: String
 ): List<String> {
     val libraryNames = libraries.associate { it.id to it.name }
     val scopeLine = if (policy.scope == AutomaticDownloadScope.ALL_LIBRARIES) {
@@ -5055,6 +5187,10 @@ private fun automaticDownloadLocalizedReviewLines(
             }
         ),
         stringResource(
+            R.string.settings_auto_download_review_location,
+            downloadLocationName
+        ),
+        stringResource(
             R.string.settings_auto_download_review_max_storage,
             maximumLimit
         ),
@@ -5084,7 +5220,8 @@ private fun localizedAutomaticDownloadLimit(bytes: Long): String = if (bytes <= 
 
 internal fun automaticDownloadReviewLines(
     policy: AutomaticDownloadPolicy,
-    libraries: List<LibrarySummary>
+    libraries: List<LibrarySummary>,
+    downloadLocationName: String = "Internal app storage"
 ): List<String> {
     val libraryNames = libraries.associate { it.id to it.name }
     val scopeSummary = if (policy.scope == AutomaticDownloadScope.ALL_LIBRARIES) {
@@ -5111,6 +5248,7 @@ internal fun automaticDownloadReviewLines(
             "Any connected network (cellular policy still applies)"
         },
         "Power: " + if (policy.chargingRequired) "Only while charging" else "Charging not required",
+        "Download location: $downloadLocationName",
         "Maximum local-book storage: ${formatAutomaticDownloadLimit(policy.maximumBytes)}",
         "Reserved minimum free space: ${formatAutomaticDownloadLimit(policy.reserveBytes)}",
         "Automatic cleanup: " + if (policy.automaticRemovalEnabled) "Enabled" else "Disabled"
@@ -10488,8 +10626,16 @@ private fun availableFileMetadata(option: BookFileOption?, label: AvailableFileL
             }
         )
     }
-    if (!option?.localPath.isNullOrBlank()) {
-        parts.add(stringResource(R.string.browse_available_offline))
+    option?.localPath?.takeIf(String::isNotBlank)?.let { localPath ->
+        parts.add(
+            stringResource(
+                if (localPath.isContentLocator()) {
+                    R.string.browse_downloaded_to_sd_card
+                } else {
+                    R.string.browse_available_offline
+                }
+            )
+        )
     }
     return parts.joinToString(" · ")
 }

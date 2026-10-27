@@ -16,6 +16,33 @@ import org.junit.Test
 
 class DownloadStoreTest {
     @Test
+    fun `portable download metadata survives store round trip without filesystem pruning`() = runBlocking {
+        val filesDir = Files.createTempDirectory("download-store-portable-record").toFile()
+        val store = DownloadStore(filesDir)
+        val record = DownloadRecord(
+            serverUrl = "https://example.test",
+            profileId = "profile",
+            storageScopeId = "test-default-scope",
+            fileId = "file",
+            bookId = "book",
+            title = "Portable book",
+            localPath = "content://downloads/document/card%3Abook.epub",
+            storageTreeUri = "content://downloads/tree/card%3ABooks",
+            storageRootUri = "content://downloads/document/card%3ABooks%2FLagrange",
+            mediaKind = MediaKind.EPUB,
+            sizeBytes = 1234L
+        )
+
+        store.save(record)
+        val restored = DownloadStore(filesDir).readAll("https://example.test").single()
+
+        assertEquals(record.localPath, restored.localPath)
+        assertEquals(record.storageTreeUri, restored.storageTreeUri)
+        assertEquals(record.storageRootUri, restored.storageRootUri)
+        assertEquals(1234L, restored.sizeBytes)
+    }
+
+    @Test
     fun `explicit storage root deletes only records owned by that root`() = runBlocking {
         val filesDir = Files.createTempDirectory("download-store-root-delete").toFile()
         val firstRoot = File(filesDir, "profiles/first").apply { mkdirs() }
