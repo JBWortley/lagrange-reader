@@ -902,6 +902,7 @@ open class ReadiumEpubReaderActivity : FragmentActivity() {
     private var twoPageSpreadActive = false
     private var fixedLayoutPublication = false
     private var showTapZoneTutorialAfterChanges by mutableStateOf(true)
+    private var highContrastTapZoneTutorial = false
     private var chapterTitles by mutableStateOf(emptyList<String>())
     private var currentChapter by mutableStateOf(0)
     private var currentPage by mutableStateOf(0)
@@ -1052,6 +1053,7 @@ open class ReadiumEpubReaderActivity : FragmentActivity() {
         )
         val appPreferences = appPreferencesStore.read()
         showTapZoneTutorialAfterChanges = appPreferences.showEpubTapZoneTutorialAfterChanges
+        highContrastTapZoneTutorial = isColorEinkTheme(appPreferences.themeMode)
         readerPreferences = appPreferences.libraryReaderPreferences[libraryId]
             ?: LibraryReaderPreferences(
                 theme = themeStore.read(),
@@ -1337,6 +1339,7 @@ open class ReadiumEpubReaderActivity : FragmentActivity() {
                         readingDirection = readingDirection,
                         tapZoneLayout = readerPreferences.tapZoneLayout,
                         tapZoneInvertMode = readerPreferences.tapZoneInvertMode,
+                        highContrast = highContrastTapZoneTutorial,
                         modifier = Modifier.fillMaxSize()
                     )
                 }

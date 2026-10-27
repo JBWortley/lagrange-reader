@@ -1228,11 +1228,22 @@ internal data class ReaderTapZoneTutorialRegion(
     val alpha: Float
 )
 
-private fun readerTapZoneTutorialRegion(region: ReaderTapZoneRegion): ReaderTapZoneTutorialRegion {
-    val (red, green, blue) = when (region.action) {
-        ReaderTapZoneAction.PREVIOUS -> Triple(255, 114, 118)
-        ReaderTapZoneAction.MENU -> Triple(0, 0, 0)
-        ReaderTapZoneAction.NEXT -> Triple(144, 238, 144)
+private fun readerTapZoneTutorialRegion(
+    region: ReaderTapZoneRegion,
+    highContrast: Boolean
+): ReaderTapZoneTutorialRegion {
+    val (red, green, blue) = if (highContrast) {
+        when (region.action) {
+            ReaderTapZoneAction.PREVIOUS -> Triple(197, 26, 26)
+            ReaderTapZoneAction.MENU -> Triple(0, 63, 143)
+            ReaderTapZoneAction.NEXT -> Triple(0, 122, 61)
+        }
+    } else {
+        when (region.action) {
+            ReaderTapZoneAction.PREVIOUS -> Triple(255, 114, 118)
+            ReaderTapZoneAction.MENU -> Triple(0, 0, 0)
+            ReaderTapZoneAction.NEXT -> Triple(144, 238, 144)
+        }
     }
     return ReaderTapZoneTutorialRegion(
         label = region.action.displayName,
@@ -1241,7 +1252,7 @@ private fun readerTapZoneTutorialRegion(region: ReaderTapZoneRegion): ReaderTapZ
         red = red,
         green = green,
         blue = blue,
-        alpha = 0.5f
+        alpha = if (highContrast) 1f else 0.5f
     )
 }
 
@@ -1250,12 +1261,13 @@ internal fun readerTapZoneTutorialRegions(
     readingDirection: LibraryReadingDirection,
     continuous: Boolean = false,
     layout: ReaderTapZoneLayout = ReaderTapZoneLayout.CURRENT_EDGES,
-    invertMode: ReaderTapZoneInvertMode = ReaderTapZoneInvertMode.NONE
+    invertMode: ReaderTapZoneInvertMode = ReaderTapZoneInvertMode.NONE,
+    highContrast: Boolean = false
 ): List<ReaderTapZoneTutorialRegion> = readerTapZoneRegions(
     layout = layout,
     readingDirection = readingDirection,
     invertMode = invertMode
-).map(::readerTapZoneTutorialRegion)
+).map { region -> readerTapZoneTutorialRegion(region, highContrast) }
 
 internal val READER_TAP_ZONE_TUTORIAL_REGIONS = readerTapZoneTutorialRegions(
     readingDirection = LibraryReadingDirection.LEFT_TO_RIGHT
@@ -1270,19 +1282,22 @@ internal fun ReaderTapZoneTutorial(
     continuous: Boolean = false,
     tapZoneLayout: ReaderTapZoneLayout = ReaderTapZoneLayout.CURRENT_EDGES,
     tapZoneInvertMode: ReaderTapZoneInvertMode = ReaderTapZoneInvertMode.NONE,
+    highContrast: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val regions = remember(
         readingDirection,
         continuous,
         tapZoneLayout,
-        tapZoneInvertMode
+        tapZoneInvertMode,
+        highContrast
     ) {
         readerTapZoneTutorialRegions(
             readingDirection = readingDirection,
             continuous = continuous,
             layout = tapZoneLayout,
-            invertMode = tapZoneInvertMode
+            invertMode = tapZoneInvertMode,
+            highContrast = highContrast
         )
     }
     val interactionSources = remember(
@@ -1324,7 +1339,7 @@ internal fun ReaderTapZoneTutorial(
                         .align(Alignment.BottomCenter)
                         .padding(bottom = 16.dp)
                         .background(
-                            Color.Black.copy(alpha = 0.7f),
+                            if (highContrast) Color.Black else Color.Black.copy(alpha = 0.7f),
                             RoundedCornerShape(8.dp)
                         )
                         .clickable(onClick = onDismiss)

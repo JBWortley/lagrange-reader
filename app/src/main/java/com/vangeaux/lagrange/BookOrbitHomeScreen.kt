@@ -119,7 +119,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -2582,18 +2584,38 @@ private fun BrowserBottomNavigation(
     onLibraries: () -> Unit,
     onMore: () -> Unit
 ) {
-    NavigationBar(modifier = Modifier.testTag("browser_bottom_navigation")) {
+    val colorEink = LocalColorEinkTheme.current
+    val itemColors = if (colorEink) {
+        NavigationBarItemDefaults.colors(
+            selectedIconColor = MaterialTheme.colorScheme.onPrimary,
+            selectedTextColor = MaterialTheme.colorScheme.onSurface,
+            indicatorColor = MaterialTheme.colorScheme.primary,
+            unselectedIconColor = MaterialTheme.colorScheme.onSurface,
+            unselectedTextColor = MaterialTheme.colorScheme.onSurface,
+            disabledIconColor = MaterialTheme.colorScheme.outline,
+            disabledTextColor = MaterialTheme.colorScheme.outline
+        )
+    } else {
+        NavigationBarItemDefaults.colors()
+    }
+    NavigationBar(
+        modifier = Modifier.testTag("browser_bottom_navigation"),
+        containerColor = MaterialTheme.colorScheme.surface,
+        tonalElevation = if (colorEink) 0.dp else NavigationBarDefaults.Elevation
+    ) {
         NavigationBarItem(
             selected = destination == BrowserDestination.HOME,
             onClick = onHome,
             icon = { Icon(Icons.Default.Home, contentDescription = null) },
-            label = { Text(stringResource(R.string.browse_home)) }
+            label = { Text(stringResource(R.string.browse_home)) },
+            colors = itemColors
         )
         NavigationBarItem(
             selected = destination == BrowserDestination.LIBRARY,
             onClick = onLibraries,
             icon = { Icon(Icons.Default.LocalLibrary, contentDescription = stringResource(R.string.browse_cd_libraries)) },
-            label = { Text(stringResource(R.string.browse_libraries)) }
+            label = { Text(stringResource(R.string.browse_libraries)) },
+            colors = itemColors
         )
         NavigationBarItem(
             selected = destination == BrowserDestination.SERIES ||
@@ -2606,7 +2628,8 @@ private fun BrowserBottomNavigation(
                 destination == BrowserDestination.ABOUT,
             onClick = onMore,
             icon = { Icon(Icons.Default.MoreVert, contentDescription = null) },
-            label = { Text(stringResource(R.string.browse_more)) }
+            label = { Text(stringResource(R.string.browse_more)) },
+            colors = itemColors
         )
     }
 }

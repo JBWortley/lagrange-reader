@@ -45,6 +45,24 @@ class ReaderTapZoneTutorialTest {
             assertEquals(0.5f, region.alpha)
         }
     }
+
+    @Test
+    fun `colour eink tutorial uses opaque saturated regions`() {
+        val regions = readerTapZoneTutorialRegions(
+            readingDirection = LibraryReadingDirection.LEFT_TO_RIGHT,
+            highContrast = true
+        )
+
+        assertEquals(
+            listOf(
+                listOf(197, 26, 26),
+                listOf(0, 63, 143),
+                listOf(0, 122, 61)
+            ),
+            regions.map { listOf(it.red, it.green, it.blue) }
+        )
+        regions.forEach { region -> assertEquals(1f, region.alpha) }
+    }
     @Test
     fun `tutorial follows the selected library reading direction`() {
         assertEquals(

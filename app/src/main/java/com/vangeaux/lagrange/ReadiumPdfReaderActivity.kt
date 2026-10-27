@@ -178,6 +178,7 @@ class ReadiumPdfReaderActivity : FragmentActivity() {
     private var readingDirection by mutableStateOf(LibraryReadingDirection.LEFT_TO_RIGHT)
     private var readerPreferences by mutableStateOf(LibraryReaderPreferences())
     private var showTapZoneTutorialAfterChanges by mutableStateOf(true)
+    private var appThemeMode = AppThemeMode.FOLLOW_SYSTEM
     private var currentPage by mutableStateOf(0)
     private var currentPageCount by mutableStateOf(1)
     private var pageLocators: List<Locator> = emptyList()
@@ -243,6 +244,7 @@ class ReadiumPdfReaderActivity : FragmentActivity() {
         libraryId = intent.getStringExtra(EXTRA_LIBRARY_ID).orEmpty()
         val appPreferences = AppPreferencesStore(this).read()
         showTapZoneTutorialAfterChanges = appPreferences.showPdfTapZoneTutorialAfterChanges
+        appThemeMode = appPreferences.themeMode
         readerPreferences = appPreferences.readerPreferencesFor(libraryId)
         readingDirection = readerPreferences.readingDirection
         isPreview = intent.getBooleanExtra(EXTRA_IS_PREVIEW, false)
@@ -295,7 +297,11 @@ class ReadiumPdfReaderActivity : FragmentActivity() {
         )
         viewOnlyBannerView = ComposeView(this).apply {
             visibility = if (isPreview) View.VISIBLE else View.GONE
-            setContent { BookOrbitTheme { ViewOnlyModeBanner(onConfirmReadMode = ::enableReadMode) } }
+            setContent {
+                BookOrbitTheme(themeMode = appThemeMode) {
+                    ViewOnlyModeBanner(onConfirmReadMode = ::enableReadMode)
+                }
+            }
             addOnLayoutChangeListener { view, _, _, _, _, _, _, _, _ ->
                 val topMargin = (view.layoutParams as? FrameLayout.LayoutParams)?.topMargin ?: 0
                 readerContainer.setPadding(
@@ -337,7 +343,7 @@ class ReadiumPdfReaderActivity : FragmentActivity() {
         }
         footerView = ComposeView(this).apply {
             setContent {
-                BookOrbitTheme {
+                BookOrbitTheme(themeMode = appThemeMode) {
                     ComicReaderProgressFooter(
                         currentPage = currentPage,
                         pageCount = currentPageCount,
@@ -357,7 +363,7 @@ class ReadiumPdfReaderActivity : FragmentActivity() {
         chromeView = ComposeView(this).apply {
             visibility = View.GONE
             setContent {
-                BookOrbitTheme {
+                BookOrbitTheme(themeMode = appThemeMode) {
                     ReaderLightweightChrome(
                         title = if (isPreview) getString(R.string.reader_preview_title, displayTitle) else displayTitle,
                         theme = EpubReaderTheme.Dark,
@@ -383,7 +389,7 @@ class ReadiumPdfReaderActivity : FragmentActivity() {
         optionsView = ComposeView(this).apply {
             visibility = View.GONE
             setContent {
-                BookOrbitTheme {
+                BookOrbitTheme(themeMode = appThemeMode) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         EpubReaderDismissScrim(onDismiss = ::hideOptions)
                         ComicReaderOptionsBottomSheet(
@@ -414,12 +420,13 @@ class ReadiumPdfReaderActivity : FragmentActivity() {
             visibility = View.GONE
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
             setContent {
-                BookOrbitTheme {
+                BookOrbitTheme(themeMode = appThemeMode) {
                     ReaderTapZoneTutorial(
                         onDismiss = ::hideTapZoneTutorial,
                         readingDirection = readingDirection,
                         tapZoneLayout = readerPreferences.tapZoneLayout,
                         tapZoneInvertMode = readerPreferences.tapZoneInvertMode,
+                        highContrast = isColorEinkTheme(appThemeMode),
                         modifier = Modifier.fillMaxSize()
                     )
                 }
