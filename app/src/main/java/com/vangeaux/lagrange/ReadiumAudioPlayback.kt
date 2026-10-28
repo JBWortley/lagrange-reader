@@ -558,7 +558,9 @@ internal data class PreparedAudiobookPlaylist(
 internal fun prepareAudiobookPlaylist(files: List<BookFileOption>): PreparedAudiobookPlaylist {
     val tracks = AudiobookTimeline.downloadableAudioFiles(files).mapNotNull { file ->
         val fileId = file.fileId?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-        val localPath = file.localPath?.takeIf { File(it).isFile }
+        val localPath = file.localPath?.takeIf {
+            it.isContentLocator() || File(it).isFile
+        }
         val streamUrl = file.book.streamUrl?.takeIf { it.isNotBlank() }
             ?: localPath
             ?: return@mapNotNull null
@@ -600,7 +602,11 @@ internal fun buildAudiobookMediaItems(
         }
         MediaItem.Builder()
             .setMediaId(spec.fileId)
-            .setUri(spec.localPath?.let { Uri.parse(File(it).toURI().toString()) } ?: Uri.parse(spec.streamUrl))
+            .setUri(
+                spec.localPath?.let { locator ->
+                    if (locator.isContentLocator()) Uri.parse(locator) else Uri.fromFile(File(locator))
+                } ?: Uri.parse(spec.streamUrl)
+            )
             .setMimeType(spec.mimeType)
             .setMediaMetadata(metadataBuilder.build())
             .build()
@@ -1971,7 +1977,7 @@ class ReadiumAudioPlaybackController internal constructor(
             open(
                 book = book,
                 file = book.localPath?.let(::File)?.takeIf { it.isFile },
-                streamUrl = book.streamUrl,
+                streamUrl = book.localPath?.takeIf(String::isContentLocator) ?: book.streamUrl,
                 initialPositionMs = positionMs,
                 launchMode = ReaderLaunchMode.NORMAL,
                 playWhenReady = true
