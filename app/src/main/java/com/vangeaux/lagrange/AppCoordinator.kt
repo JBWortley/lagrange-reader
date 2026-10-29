@@ -169,6 +169,8 @@ class AppCoordinator internal constructor(
     private fun cacheModule(): CacheModule? = cacheModuleResolver?.invoke(repository)
     private fun featureAvailability(): ProviderFeatureAvailability =
         featureAvailabilityResolver?.invoke(repository) ?: ProviderFeatureAvailability()
+    fun libraryBookCatalogAvailable(): Boolean = featureAvailability().libraryBookCatalog
+    fun seriesCatalogAvailable(): Boolean = featureAvailability().seriesCatalog
     private fun providerSessionModule(): ProviderSessionModule? = providerSessionModuleResolver?.invoke(repository)
     private fun bookOrbitOidcModule(): BookOrbitOidcModule? = bookOrbitOidcModuleResolver?.invoke(repository)
     fun achievementsAvailable(): Boolean = featureAvailability().achievements
@@ -423,6 +425,8 @@ class AppCoordinator internal constructor(
     }
 
     suspend fun loadStorageUsage(): StorageUsage = cacheModule()?.loadStorageUsage() ?: repository.loadStorageUsage()
+
+    fun offlineCacheAvailable(): Boolean = cacheModule()?.offlineCacheAvailable ?: true
 
     suspend fun clearAppCache() {
         cacheModule()?.clearAppCache() ?: repository.clearAppCache()

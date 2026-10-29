@@ -139,6 +139,7 @@ interface AnnotationModule {
 interface AchievementModule { suspend fun loadAchievements(): AchievementCatalogue }
 interface StatisticsModule { suspend fun loadUserStatistics(): UserStatistics }
 interface CacheModule {
+    val offlineCacheAvailable: Boolean get() = true
     suspend fun loadCachedBrowserState(): BrowserState? = null
     suspend fun loadStorageUsage(): StorageUsage
     suspend fun clearAppCache()
@@ -169,6 +170,8 @@ interface BackgroundCacheModule {
 
 data class ProviderFeatureAvailability(
     val serverHostedSignIn: Boolean = false,
+    val libraryBookCatalog: Boolean = true,
+    val seriesCatalog: Boolean = true,
     val achievements: Boolean = true,
     val statistics: Boolean = true,
     val smartScopes: Boolean = true,
