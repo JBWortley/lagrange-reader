@@ -56,6 +56,11 @@ On Home, Library, Search, Series, Authors, Genre, and Local books, verify:
 - force-closing during a transfer restores a failed row with `Retry` and `Clear`;
 - a failed first download stays out of Local books;
 - a failed update preserves the previous local copy and exposes `Update local` plus `Delete local`.
+- after a completed Kavita download, refresh while online and confirm the book remains downloaded; disable network access and open it from Home, Browse, and Local books using the retained local copy.
+- for Kavita, mark one book read and then unread; confirm only that book changes, its progress resets, and the action succeeds without the series-scope error.
+- for Kavita, open a previously visited Book Detail with network access disabled; confirm the cached metadata shell opens, the selected file identity remains correct, and a completed local copy remains available.
+- for Kavita, switch between two profiles that use the same server or server origin; confirm the active profile's JWT/cookie is the only session used, and that restoring one profile cannot authenticate requests as the other.
+- for Kavita background cache warming, verify each continuation advances one catalog page and does not restart a complete-library scan; confirm a server/profile change stops the old worker without writing into the new profile's cache.
 
 For book thumbnails on Home, Library, Search, Series, Authors, Genre, and Local books, verify that an untouched unread book shows a small yellow folded-corner marker at the top-right of its cover. Books with any reading progress, books marked read, and missing-server books must not show the marker. Confirm the marker does not change thumbnail dimensions, obscure the missing-book overlay, or become a separate click target, and that accessibility semantics identify the book as unread.
 
@@ -117,7 +122,7 @@ On Book Detail, Series, Authors, Local books, Statistics, and Achievements:
 - Local books refresh does not interrupt active downloads or destructive actions;
 - automatic/background synchronization remains silent.
 
-For cached catalogs, confirm complete cached content appears before network refresh finishes, additions/deletions/progress changes reconcile after refresh, and an interrupted refresh retains the last complete usable snapshot. For orientation/process recreation, confirm one reader navigator remains active, the exact locator/page is restored, Preview remains isolated, and explicit Close is distinguished from recreation.
+For cached catalogs, confirm complete cached content appears before network refresh finishes, additions/deletions/progress changes reconcile after refresh, and an interrupted refresh retains the last complete usable snapshot. For Kavita cache restart coverage, while online open Home, enter Browse and Series, open several books, force-close the app, disable network access, and reopen it. Confirm the cached Home shelves, visited book cards, and visited series/catalog pages remain available, while uncached pages use an explicit unavailable or incomplete state rather than an empty successful result. Repeat after switching profiles or servers and confirm their snapshots do not mix. For orientation/process recreation, confirm one reader navigator remains active, the exact locator/page is restored, Preview remains isolated, and explicit Close is distinguished from recreation.
 
 ### Authentication and account isolation
 

@@ -144,6 +144,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -205,6 +206,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -907,7 +910,7 @@ internal fun homeLocalBooksPreview(
 }
 
 internal fun homeFeedShelves(shelves: HomeShelfData, libraryId: String?): HomeShelfData {
-    if (libraryId == null || shelves.isAggregatedAcrossLibraries) return shelves
+    if (libraryId == null) return shelves
     fun scoped(source: Map<HomeSection, List<BookSummary>>): Map<HomeSection, List<BookSummary>> =
         source.mapValues { (_, books) -> books.filter { it.libraryId == libraryId } }
     return shelves.copy(
@@ -918,6 +921,19 @@ internal fun homeFeedShelves(shelves: HomeShelfData, libraryId: String?): HomeSh
 
 internal fun homeFeedBooks(books: List<BookSummary>, libraryId: String?): List<BookSummary> =
     libraryId?.let { selectedId -> books.filter { it.libraryId == selectedId } } ?: books
+
+internal fun homeSectionSourceBooks(
+    state: BrowserState,
+    section: HomeSection,
+    serverWide: Boolean
+): List<BookSummary> {
+    val shelves = homeFeedShelves(state.homeShelves, state.selectedLibraryId.takeUnless { serverWide })
+    shelves.seriesBySection[section]?.let { return it }
+    if (shelves.isServerProvided && section in shelves.booksBySection.keys) {
+        return shelves.booksBySection[section].orEmpty()
+    }
+    return if (serverWide) state.homeBooks else state.books
+}
 
 internal fun bookAvailableFormatsForDisplay(
     book: BookSummary
@@ -1177,6 +1193,11 @@ internal fun NativeLibraryBrowserScreen(
     var destination by rememberSaveable {
         mutableStateOf(appPreferences.defaultOpeningScreen.toBrowserDestination())
     }
+    LaunchedEffect(state.homeShelves.deferInitialCatalogLoad, destination) {
+        if (state.homeShelves.deferInitialCatalogLoad && destination == BrowserDestination.SERIES) {
+            destination = BrowserDestination.LIBRARY
+        }
+    }
     LaunchedEffect(achievementsAvailable) {
         if (!achievementsAvailable && destination == BrowserDestination.ACHIEVEMENTS) {
             destination = BrowserDestination.HOME
@@ -1231,6 +1252,7 @@ internal fun NativeLibraryBrowserScreen(
         update = { browserRoute = browserRoute.copy(selectedSeriesKey = it) }
     )
     var selectedSeriesKey by selectedSeriesKeyProperty
+    var selectedSeriesName by remember { mutableStateOf<String?>(null) }
     val selectedAuthorProperty = browserRouteProperty(
         value = { browserRoute.selectedAuthor },
         update = { browserRoute = browserRoute.copy(selectedAuthor = it) }
@@ -1484,6 +1506,7 @@ internal fun NativeLibraryBrowserScreen(
             windowInsets = WindowInsets(0, 0, 0, 0)
         ) {
             MoreMenu(
+                seriesAvailable = !state.homeShelves.deferInitialCatalogLoad,
                 smartScopesAvailable = smartScopesAvailable,
                 authorsAvailable = authorsAvailable,
                 onSeries = {
@@ -2014,6 +2037,7 @@ internal fun NativeLibraryBrowserScreen(
                     imageLoader = catalogImageLoader,
                     onSeriesSelected = { series ->
                         selectedSeriesKey = series.id
+                        selectedSeriesName = series.name
                         activeSeriesGenre = null
                         genreSourceSeriesKey = null
                         detailReturnDestination = BrowserDestination.SERIES
@@ -2054,6 +2078,7 @@ internal fun NativeLibraryBrowserScreen(
                     readingStatusOptions = readingStatusOptions,
                     onSeriesSelected = { seriesKey ->
                         selectedSeriesKey = seriesKey
+                        selectedSeriesName = selectedBook?.seriesName
                         selectedBook = null
                     },
                     onAuthorSelected = { authorName ->
@@ -2077,6 +2102,7 @@ internal fun NativeLibraryBrowserScreen(
                 )
                 selectedSeriesKey != null && destination != BrowserDestination.SMART_SCOPES -> SeriesDetails(
                     seriesKey = selectedSeriesKey!!,
+                    seriesNameHint = selectedSeriesName,
                     books = (state.books + state.homeBooks).distinctBy { it.id to it.fileId },
                     libraries = state.libraries,
                     groupingMode = appPreferences.seriesGroupingMode,
@@ -2142,6 +2168,7 @@ internal fun NativeLibraryBrowserScreen(
                     imageLoader = catalogImageLoader,
                     onSeriesSelected = { series ->
                         selectedSeriesKey = series.id
+                        selectedSeriesName = series.name
                         detailReturnDestination = BrowserDestination.SERIES
                     }
                 )
@@ -2238,15 +2265,44 @@ internal fun NativeLibraryBrowserScreen(
                 destination.toHomeSection() in setOf(
                     HomeSection.RECENTLY_ADDED_SERIES,
                     HomeSection.RECENTLY_UPDATED_SERIES
-                ) -> HomeSeriesSectionScreen(
+                ) -> if (state.homeShelves.isServerProvided) {
+                    SeriesCatalogScreen(
+                        query = "",
+                        initialFilter = SeriesCatalogFilter(
+                            libraryId = state.selectedLibraryId.takeUnless {
+                                homeSectionReturnDestination == BrowserDestination.HOME
+                            },
+                            sort = SeriesSortOption.LAST_ADDED,
+                            direction = SortDirection.DESCENDING,
+                            homeSection = destination.toHomeSection()
+                        ),
+                        persistenceKey = "home-series:${destination.toHomeSection()}:${state.selectedLibraryId}",
+                        appPreferences = appPreferences,
+                        onAppPreferencesChange = onAppPreferencesChange,
+                        libraryOptions = state.libraries,
+                        books = emptyList(),
+                        loadAllPages = false,
+                        showJumpRail = false,
+                        enablePagination = false,
+                        modifier = Modifier.padding(padding),
+                        loader = seriesCatalogLoader,
+                        imageLoader = catalogImageLoader,
+                        onSeriesSelected = { series ->
+                            selectedSeriesKey = series.id
+                            selectedSeriesName = series.name
+                            detailReturnDestination = destination
+                        }
+                    )
+                } else HomeSeriesSectionScreen(
                     section = destination.toHomeSection()!!,
-                    books = if (homeSectionReturnDestination == BrowserDestination.LIBRARY) {
-                        state.books
-                    } else {
-                        state.homeBooks
-                    },
+                    books = homeSectionSourceBooks(
+                        state = state,
+                        section = destination.toHomeSection()!!,
+                        serverWide = homeSectionReturnDestination == BrowserDestination.HOME
+                    ),
                     state = state,
-                    serverWide = homeSectionReturnDestination == BrowserDestination.HOME,
+                    serverWide = homeSectionReturnDestination == BrowserDestination.HOME &&
+                        !state.homeShelves.isServerProvided,
                     recentBooksPageLoader = recentBooksPageLoader,
                     seriesCatalogLoader = seriesCatalogLoader,
                     modifier = Modifier.padding(padding),
@@ -2258,11 +2314,11 @@ internal fun NativeLibraryBrowserScreen(
                 )
                 destination.toHomeSection() != null -> HomeSectionScreen(
                     section = destination.toHomeSection()!!,
-                    books = if (homeSectionReturnDestination == BrowserDestination.LIBRARY) {
-                        state.books
-                    } else {
-                        state.homeBooks
-                    },
+                    books = homeSectionSourceBooks(
+                        state = state,
+                        section = destination.toHomeSection()!!,
+                        serverWide = homeSectionReturnDestination == BrowserDestination.HOME
+                    ),
                     state = state,
                     localOnDeckEnabled = appPreferences.showOnDeckWhenShelfSyncDisabled,
                     serverWide = homeSectionReturnDestination == BrowserDestination.HOME,
@@ -2330,6 +2386,8 @@ internal fun NativeLibraryBrowserScreen(
                     isRefreshing = state.isRefreshing,
                     onRefresh = onRefresh,
                     onLoadMoreLibraryBooks = onLoadMoreLibraryBooks,
+                    seriesCatalogLoader = seriesCatalogLoader,
+                    catalogImageLoader = catalogImageLoader,
                     localBooksLoader = localBooksLoader,
                     coverLoader = coverLoader,
                     onBookSelected = { book ->
@@ -2339,6 +2397,9 @@ internal fun NativeLibraryBrowserScreen(
                     onSeriesSelected = { seriesKey ->
                         detailReturnDestination = BrowserDestination.LIBRARY
                         selectedSeriesKey = seriesKey
+                    },
+                    onSeriesNameSelected = { seriesName ->
+                        selectedSeriesName = seriesName
                     },
                     onRemoveFromCurrentlyReading = onRemoveFromCurrentlyReading,
                     onDownload = requestDownload,
@@ -2544,6 +2605,7 @@ private fun BrowserBottomNavigation(
 
 @Composable
 private fun MoreMenu(
+    seriesAvailable: Boolean = true,
     smartScopesAvailable: Boolean = true,
     authorsAvailable: Boolean = true,
     onSeries: () -> Unit,
@@ -2562,11 +2624,13 @@ private fun MoreMenu(
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
             style = MaterialTheme.typography.headlineSmall
         )
-        ListItem(
-            headlineContent = { Text(stringResource(R.string.browse_series)) },
-            leadingContent = { Icon(Icons.Default.CollectionsBookmark, contentDescription = stringResource(R.string.browse_cd_series)) },
-            modifier = Modifier.clickable(onClick = onSeries)
-        )
+        if (seriesAvailable) {
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.browse_series)) },
+                leadingContent = { Icon(Icons.Default.CollectionsBookmark, contentDescription = stringResource(R.string.browse_cd_series)) },
+                modifier = Modifier.clickable(onClick = onSeries)
+            )
+        }
         if (smartScopesAvailable) {
             ListItem(
                 headlineContent = { Text(stringResource(R.string.browse_smart_scopes)) },
@@ -2749,6 +2813,9 @@ private fun SeriesCatalogScreen(
     libraryOptions: List<LibrarySummary>,
     selectedScope: SmartScope? = null,
     books: List<BookSummary> = emptyList(),
+    loadAllPages: Boolean = true,
+    showJumpRail: Boolean = true,
+    enablePagination: Boolean = true,
     modifier: Modifier,
     loader: suspend (SeriesCatalogFilter, Int) -> SeriesCatalogPage,
     scopeLoader: suspend (Long, SeriesCatalogFilter, Int) -> SeriesCatalogPage = { _, _, _ -> SeriesCatalogPage() },
@@ -2759,11 +2826,16 @@ private fun SeriesCatalogScreen(
     val lockedFilter = appPreferences.lockedSeriesFilters[persistenceKey]
         ?.let(::seriesCatalogFilterFromStorage)
     var items by remember(query, initialFilter, selectedScopeId) { mutableStateOf<List<SeriesSummary>>(emptyList()) }
+    var jumpIndexItems by remember(query, initialFilter, selectedScopeId) { mutableStateOf<List<SeriesSummary>>(emptyList()) }
     var total by remember(query, initialFilter, selectedScopeId) { mutableStateOf(0) }
     var isLoading by remember(query, initialFilter, selectedScopeId) { mutableStateOf(false) }
     var isRefreshing by remember(query, initialFilter, selectedScopeId) { mutableStateOf(false) }
     var loadError by remember(query, initialFilter, selectedScopeId) { mutableStateOf(false) }
     var reloadKey by remember(query, initialFilter, selectedScopeId) { mutableIntStateOf(0) }
+    var nextPage by remember(query, initialFilter, selectedScopeId) { mutableIntStateOf(1) }
+    var seriesPageSize by remember(query, initialFilter, selectedScopeId) { mutableIntStateOf(20) }
+    var hasMorePages by remember(query, initialFilter, selectedScopeId) { mutableStateOf(false) }
+    var isLoadingMore by remember(query, initialFilter, selectedScopeId) { mutableStateOf(false) }
     var filter by remember(query, initialFilter, selectedScopeId) {
         mutableStateOf(
             (lockedFilter ?: initialFilter).copy(query = query.takeIf { it.isNotBlank() })
@@ -2778,15 +2850,26 @@ private fun SeriesCatalogScreen(
         isLoading = true
         loadError = false
         items = emptyList()
+        jumpIndexItems = emptyList()
         total = 0
         gridState.scrollToItem(0)
         if (query.isNotBlank()) delay(300)
         val activeFilter = filter.copy(query = query.takeIf { it.isNotBlank() })
-        runCatching { loadCompleteSeriesCatalog { page ->
-                if (selectedScope != null) scopeLoader(selectedScope.id, activeFilter, page) else loader(activeFilter, page)
-            } }.onSuccess { catalog ->
+        runCatching {
+            if (loadAllPages) {
+                loadCompleteSeriesCatalog { page ->
+                    if (selectedScope != null) scopeLoader(selectedScope.id, activeFilter, page) else loader(activeFilter, page)
+                }
+            } else {
+                if (selectedScope != null) scopeLoader(selectedScope.id, activeFilter, 0) else loader(activeFilter, 0)
+            }
+        }.onSuccess { catalog ->
             items = catalog.items
-            total = catalog.total ?: catalog.items.size
+            jumpIndexItems = catalog.jumpIndex ?: catalog.items
+            total = catalog.total ?: total.takeIf { it > 0 } ?: catalog.items.size
+            nextPage = 1
+            seriesPageSize = catalog.size ?: seriesPageSize
+            hasMorePages = enablePagination && !loadAllPages && catalog.items.size >= (catalog.size ?: 0) && catalog.items.isNotEmpty()
         }.onFailure {
             loadError = true
         }
@@ -2796,12 +2879,20 @@ private fun SeriesCatalogScreen(
         if (reloadKey == 0) return@LaunchedEffect
         try {
             val activeFilter = filter.copy(query = query.takeIf { it.isNotBlank() })
-            val catalog = loadCompleteSeriesCatalog { page ->
-                if (selectedScope != null) scopeLoader(selectedScope.id, activeFilter, page) else loader(activeFilter, page)
+            val catalog = if (loadAllPages) {
+                loadCompleteSeriesCatalog { page ->
+                    if (selectedScope != null) scopeLoader(selectedScope.id, activeFilter, page) else loader(activeFilter, page)
+                }
+            } else {
+                if (selectedScope != null) scopeLoader(selectedScope.id, activeFilter, 0) else loader(activeFilter, 0)
             }
             if (catalog.items.isNotEmpty() || items.isEmpty()) {
                 items = catalog.items
-                total = catalog.total ?: catalog.items.size
+                jumpIndexItems = catalog.jumpIndex ?: jumpIndexItems
+                total = catalog.total ?: total.takeIf { it > 0 } ?: catalog.items.size
+                nextPage = 1
+                seriesPageSize = catalog.size ?: seriesPageSize
+                hasMorePages = enablePagination && !loadAllPages && catalog.items.size >= (catalog.size ?: 0) && catalog.items.isNotEmpty()
             }
         } finally {
             isRefreshing = false
@@ -2813,16 +2904,115 @@ private fun SeriesCatalogScreen(
             reloadKey += 1
         }
     }
+    suspend fun loadNextPage(includeCounts: Boolean = true): Boolean {
+        if (!enablePagination || loadAllPages || !hasMorePages || isLoading || isLoadingMore) return false
+        isLoadingMore = true
+        return try {
+            val activeFilter = filter.copy(
+                query = query.takeIf { it.isNotBlank() },
+                includeCounts = includeCounts
+            )
+            val catalog = runCatching {
+                if (selectedScope != null) scopeLoader(selectedScope.id, activeFilter, nextPage)
+                else loader(activeFilter, nextPage)
+            }.getOrNull() ?: return false
+            items = (items + catalog.items).distinctBy { it.id }
+            total = catalog.total ?: total.takeIf { it > 0 } ?: items.size
+            seriesPageSize = catalog.size ?: seriesPageSize
+            nextPage += 1
+            hasMorePages = catalog.items.size >= (catalog.size ?: 0) && catalog.items.isNotEmpty()
+            catalog.items.isNotEmpty()
+        } finally {
+            isLoadingMore = false
+        }
+    }
+    LaunchedEffect(loadAllPages, filter, selectedScopeId, hasMorePages) {
+        if (!enablePagination || loadAllPages) return@LaunchedEffect
+        snapshotFlow {
+            val layout = gridState.layoutInfo
+            val lastVisible = layout.visibleItemsInfo.lastOrNull()?.index ?: -1
+            lastVisible to layout.totalItemsCount
+        }
+            .distinctUntilChanged()
+            .filter { (lastVisible, totalItems) ->
+                hasMorePages && totalItems > 0 && lastVisible >= totalItems - 6
+            }
+            .collect { loadNextPage() }
+    }
+    suspend fun jumpToSeriesIndex(index: Int) {
+        val targetLabel = jumpIndexItems.getOrNull(index)?.let { libraryJumpLabel(it.name) }
+        if (index < items.size) {
+            val localIndex = targetLabel?.let { label -> items.indexOfFirst { libraryJumpLabel(it.name) == label } }
+                ?.takeIf { it >= 0 } ?: index
+            if (reduceMotion) gridState.scrollToItem(localIndex) else gridState.animateScrollToItem(localIndex)
+            return
+        }
+        var targetPage = (index / seriesPageSize.coerceAtLeast(1)).coerceAtLeast(0)
+        val activeFilter = filter.copy(query = query.takeIf { it.isNotBlank() }, includeCounts = false)
+        suspend fun loadSummaryPage(page: Int): SeriesCatalogPage? = runCatching {
+            if (selectedScope != null) scopeLoader(selectedScope.id, activeFilter, page)
+            else loader(activeFilter, page)
+        }.getOrNull()
+        var catalog = loadSummaryPage(targetPage) ?: return
+        if (targetLabel != null && catalog.items.none { libraryJumpLabel(it.name) == targetLabel }) {
+            val next = loadSummaryPage(targetPage + 1)
+            if (next?.items?.any { libraryJumpLabel(it.name) == targetLabel } == true) {
+                targetPage += 1
+                catalog = next
+            }
+        }
+        if (catalog.items.isEmpty()) return
+        items = catalog.items
+        seriesPageSize = catalog.size ?: seriesPageSize
+        nextPage = targetPage + 1
+        hasMorePages = catalog.items.size >= (catalog.size ?: 0) && catalog.items.isNotEmpty()
+        val localIndex = targetLabel?.let { label -> catalog.items.indexOfFirst { libraryJumpLabel(it.name) == label } }
+            ?.takeIf { it >= 0 }
+            ?: (index % seriesPageSize.coerceAtLeast(1)).coerceIn(0, catalog.items.lastIndex)
+        if (reduceMotion) gridState.scrollToItem(localIndex) else gridState.animateScrollToItem(localIndex)
+        scope.launch {
+            val enriched = runCatching {
+                val countFilter = filter.copy(query = query.takeIf { it.isNotBlank() }, includeCounts = true)
+                if (selectedScope != null) scopeLoader(selectedScope.id, countFilter, targetPage)
+                else loader(countFilter, targetPage)
+            }.getOrNull() ?: return@launch
+            val enrichedById = enriched.items.associateBy { it.id }
+            items = items.map { enrichedById[it.id] ?: it }
+        }
+    }
+
+    suspend fun jumpToSeriesLabel(target: Char) {
+        if (loadAllPages) return
+        var targetPage = if (items.any { libraryJumpLabel(it.name) == target }) 0 else -1
+        while (targetPage < 0 && hasMorePages) {
+            val pageToLoad = nextPage
+            if (!loadNextPage(includeCounts = false)) break
+            if (items.any { libraryJumpLabel(it.name) == target }) targetPage = pageToLoad
+        }
+        if (targetPage < 0) return
+        val pagesToEnrich = (targetPage - 1..targetPage + 1).filter { it >= 0 && it < nextPage }
+        pagesToEnrich.forEach { page ->
+            val enriched = runCatching {
+                loader(filter.copy(includeCounts = true), page)
+            }.getOrNull() ?: return@forEach
+            val enrichedById = enriched.items.associateBy { it.id }
+            items = items.map { enrichedById[it.id] ?: it }
+        }
+        val index = items.indexOfFirst { libraryJumpLabel(it.name) == target }
+        if (index >= 0) {
+            if (reduceMotion) gridState.scrollToItem(index) else gridState.animateScrollToItem(index)
+        }
+    }
     val displayItems = remember(items, books) { enrichSeriesAvailableFormats(items, books) }
-    val jumpTargets = remember(displayItems, filter.sort, filter.direction, isLoading) {
+    val jumpTargets = remember(jumpIndexItems, filter.sort, filter.direction, isLoading) {
         if (!isLoading && filter.sort == SeriesSortOption.NAME) {
-            buildSeriesJumpTargets(displayItems, filter.direction)
+            buildSeriesJumpTargets(jumpIndexItems, filter.direction)
         } else {
             emptyList()
         }
     }
 
-    val hasJumpRail = jumpTargets.isNotEmpty()
+    val hasJumpRail = showJumpRail && !isLoading && (jumpTargets.isNotEmpty() || (!loadAllPages && displayItems.isNotEmpty()))
     PullToRefreshLayout(
         isRefreshing = isRefreshing,
         onRefresh = onRefresh,
@@ -2937,23 +3127,24 @@ private fun SeriesCatalogScreen(
         LibraryJumpRail(
             targets = jumpTargets,
             direction = filter.direction,
+            enabledLabels = if (!loadAllPages) catalogJumpRailLabels(filter.direction).toSet() else null,
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
                     .padding(end = 4.dp, bottom = 12.dp),
                 onJump = { index ->
                     scope.launch {
-                        if (reduceMotion) {
-                            gridState.scrollToItem(index)
-                        } else {
-                            gridState.animateScrollToItem(index)
-                        }
+                        jumpToSeriesIndex(index)
                     }
-                }
+                },
+                onUnavailableJump = if (!loadAllPages) {
+                    { label -> scope.launch { jumpToSeriesLabel(label) } }
+                } else null
             )
         }
         }
         }
     }
+
     if (showFilter) {
         SeriesFilterSheet(
             initial = filter,
@@ -6694,6 +6885,7 @@ private fun HomeFeed(
     // Provider Home shelves are server-wide; filter them before rendering a
     // library Recommended feed instead of reusing aggregate contents.
     val serverShelves = homeFeedShelves(state.homeShelves, localBooksLibraryId)
+    val hiddenSections = serverShelves.hiddenSections
     val onDeckEnabled = state.homeShelfPreferences.effectiveOnDeckEnabled(
         localFallbackEnabled = localOnDeckEnabled,
         hasProviderOwnedShelves = serverShelves.isServerProvided
@@ -6727,6 +6919,10 @@ private fun HomeFeed(
     }
     val currentlyReading = currentlyReadingAll.take(HOME_PREVIEW_LIMIT)
     val onDeck = onDeckAll.take(HOME_PREVIEW_LIMIT)
+    val onDeckSeriesAll = if (serverShelves.isServerProvided) {
+        val seriesBooks = serverShelves.seriesBySection[HomeSection.ON_DECK].orEmpty()
+        seriesBooks.map { book -> (book.seriesName ?: book.title) to book }
+    } else emptyList()
     val wantToRead = wantToReadAll.take(HOME_PREVIEW_LIMIT)
     val recentlyAddedBooksAll = if (serverShelves.isServerProvided) {
         serverShelves.booksBySection[HomeSection.RECENTLY_ADDED_BOOKS].orEmpty()
@@ -6767,22 +6963,12 @@ private fun HomeFeed(
     val recentlyReleasedBooksAll = if (serverShelves.isServerProvided) {
         serverShelves.booksBySection[HomeSection.RECENTLY_RELEASED_BOOKS].orEmpty()
     } else emptyList()
+    fun providerSeriesShelf(section: HomeSection): List<Pair<String, BookSummary>> {
+        val seriesBooks = serverShelves.seriesBySection[section].orEmpty()
+        return seriesBooks.map { book -> (book.seriesName ?: book.title) to book }
+    }
     val recentSeriesAll = if (serverShelves.isServerProvided) {
-        val seriesBooks = serverShelves.seriesBySection[HomeSection.RECENTLY_ADDED_SERIES].orEmpty()
-        homeSeriesShelfItems(
-            series = seriesBooks.mapNotNull { book ->
-                book.seriesId?.let {
-                    SeriesSummary(
-                        id = it,
-                        name = book.seriesName ?: book.title,
-                        coverUrl = book.coverUrl
-                    )
-                }
-            }.distinctBy { it.id },
-            books = seriesBooks,
-            limit = Int.MAX_VALUE,
-            preferBookOrbitImportSequence = false
-        )
+        providerSeriesShelf(HomeSection.RECENTLY_ADDED_SERIES)
     } else {
         homeSeriesShelfItems(
             series = authoritativeRecentSeries ?: fallbackRecentSeries,
@@ -6791,7 +6977,9 @@ private fun HomeFeed(
             preferBookOrbitImportSequence = true
         )
     }
-    val updatedSeriesAll = if (serverShelves.isServerProvided) emptyList() else recentSeries(libraryScopedBooks, useUpdatedAt = true, limit = null)
+    val updatedSeriesAll = if (serverShelves.isServerProvided) {
+        providerSeriesShelf(HomeSection.RECENTLY_UPDATED_SERIES)
+    } else recentSeries(libraryScopedBooks, useUpdatedAt = true, limit = null)
     val recentlyReadAll = if (serverShelves.isServerProvided) {
         serverShelves.booksBySection[HomeSection.RECENTLY_READ].orEmpty()
     } else recentlyReadBooks(libraryScopedBooks, limit = null)
@@ -6856,21 +7044,23 @@ private fun HomeFeed(
                 )
             }
         }
-        if (onDeck.isNotEmpty()) item {
+        if (onDeckSeriesAll.isNotEmpty()) item {
+            SeriesShelf(stringResource(R.string.browse_on_deck), onDeckSeriesAll.take(HOME_PREVIEW_LIMIT), coverLoader, onSeriesSelected, onSeeAll = { onHomeSectionSelected?.invoke(HomeSection.ON_DECK) })
+        } else if (onDeck.isNotEmpty()) item {
             BookShelf(stringResource(R.string.browse_on_deck), onDeck, coverLoader, onBookSelected, state = state, onDownload = onDownload, onCancelDownload = onCancelDownload, onClearFailedDownload = onClearFailedDownload, onDeleteLocalCopy = onDeleteLocalCopy, onMarkAsRead = availableMarkAsRead, onMarkAsUnread = availableMarkAsUnread, onMarkAsStatus = onMarkAsStatus, onSeeAll = { onHomeSectionSelected?.invoke(HomeSection.ON_DECK) })
         }
-        if (wantToRead.isNotEmpty()) item {
+        if (HomeSection.WANT_TO_READ !in hiddenSections && wantToRead.isNotEmpty()) item {
             BookShelf(stringResource(R.string.browse_want_to_read), wantToRead, coverLoader, onBookSelected, state = state, onDownload = onDownload, onCancelDownload = onCancelDownload, onClearFailedDownload = onClearFailedDownload, onDeleteLocalCopy = onDeleteLocalCopy, onMarkAsRead = availableMarkAsRead, onMarkAsUnread = availableMarkAsUnread, onMarkAsStatus = onMarkAsStatus, onSeeAll = { onHomeSectionSelected?.invoke(HomeSection.WANT_TO_READ) })
         }
-        if (recentlyAddedBooks.isNotEmpty()) item {
+        if (HomeSection.RECENTLY_ADDED_BOOKS !in hiddenSections && recentlyAddedBooks.isNotEmpty()) item {
             BookShelf(stringResource(R.string.browse_recently_added_books), recentlyAddedBooks, coverLoader, onBookSelected, state = state, onDownload = onDownload, onCancelDownload = onCancelDownload, onClearFailedDownload = onClearFailedDownload, onDeleteLocalCopy = onDeleteLocalCopy, onMarkAsRead = availableMarkAsRead, onMarkAsUnread = availableMarkAsUnread, onMarkAsStatus = onMarkAsStatus, onSeeAll = { onHomeSectionSelected?.invoke(HomeSection.RECENTLY_ADDED_BOOKS) })
         }
-        if (recentlyReleasedBooks.isNotEmpty()) item {
+        if (HomeSection.RECENTLY_RELEASED_BOOKS !in hiddenSections && recentlyReleasedBooks.isNotEmpty()) item {
             BookShelf(stringResource(R.string.browse_recently_released_books), recentlyReleasedBooks, coverLoader, onBookSelected, state = state, onDownload = onDownload, onCancelDownload = onCancelDownload, onClearFailedDownload = onClearFailedDownload, onDeleteLocalCopy = onDeleteLocalCopy, onMarkAsRead = availableMarkAsRead, onMarkAsUnread = availableMarkAsUnread, onMarkAsStatus = onMarkAsStatus, onSeeAll = { onHomeSectionSelected?.invoke(HomeSection.RECENTLY_RELEASED_BOOKS) })
         }
         if (recentSeries.isNotEmpty()) item { SeriesShelf(stringResource(R.string.browse_recently_added_series), recentSeries, coverLoader, onSeriesSelected, onSeeAll = { onHomeSectionSelected?.invoke(HomeSection.RECENTLY_ADDED_SERIES) }) }
         if (updatedSeries.isNotEmpty()) item { SeriesShelf(stringResource(R.string.browse_recently_updated_series), updatedSeries, coverLoader, onSeriesSelected, onSeeAll = { onHomeSectionSelected?.invoke(HomeSection.RECENTLY_UPDATED_SERIES) }) }
-        if (recentlyRead.isNotEmpty()) item {
+        if (HomeSection.RECENTLY_READ !in hiddenSections && recentlyRead.isNotEmpty()) item {
             BookShelf(stringResource(R.string.browse_recently_read_books), recentlyRead, coverLoader, onBookSelected, state = state, onDownload = onDownload, onCancelDownload = onCancelDownload, onClearFailedDownload = onClearFailedDownload, onDeleteLocalCopy = onDeleteLocalCopy, onMarkAsRead = availableMarkAsRead, onMarkAsUnread = availableMarkAsUnread, onMarkAsStatus = onMarkAsStatus, onSeeAll = { onHomeSectionSelected?.invoke(HomeSection.RECENTLY_READ) })
         }
         if (localBooks.isNotEmpty()) item {
@@ -6890,7 +7080,9 @@ private fun HomeFeed(
             )
         }
         if (state.isLoadingBooks) item { LoadingFeedRow(stringResource(R.string.browse_loading_books)) }
-        if (!state.isLoadingBooks && state.books.isEmpty()) {
+        val hasServerHomeContent = serverShelves.booksBySection.values.any { it.isNotEmpty() } ||
+            serverShelves.seriesBySection.values.any { it.isNotEmpty() }
+        if (!state.isLoadingBooks && state.books.isEmpty() && !hasServerHomeContent) {
             item {
                 Text(
                     stringResource(R.string.browse_no_books_in_library),
@@ -7394,10 +7586,13 @@ private fun LibraryContentScreen(
     isRefreshing: Boolean,
     onRefresh: () -> Unit,
     onLoadMoreLibraryBooks: () -> Unit,
+    seriesCatalogLoader: suspend (SeriesCatalogFilter, Int) -> SeriesCatalogPage,
+    catalogImageLoader: suspend (String) -> ByteArray?,
     localBooksLoader: suspend () -> List<BookSummary>,
     coverLoader: suspend (BookSummary) -> ByteArray?,
     onBookSelected: (BookSummary) -> Unit,
     onSeriesSelected: (String) -> Unit,
+    onSeriesNameSelected: (String) -> Unit,
     onRemoveFromCurrentlyReading: (BookSummary) -> Unit,
     onDownload: ((BookSummary) -> Unit)? = null,
     onBulkDownload: ((String, List<BookSummary>) -> Unit)? = null,
@@ -7419,6 +7614,11 @@ private fun LibraryContentScreen(
         state.selectedLibraryId
     ) {
         value = runCatching { localBooksLoader() }.getOrNull()
+    }
+    LaunchedEffect(tab, state.selectedLibraryId) {
+        if (tab == LibraryTab.BROWSE && state.books.isEmpty() && !state.isCatalogComplete && !state.isCatalogSyncing) {
+            onLoadMoreLibraryBooks()
+        }
     }
     val libraryDownloadCandidates = remember(state.books, state.selectedLibraryId) {
         booksDownloadableForLibrary(state.books, state.selectedLibraryId)
@@ -7580,7 +7780,25 @@ private fun LibraryContentScreen(
                     localBooksLibraryId = state.selectedLibraryId,
                     showHeader = false
                 )
-                LibraryTab.BROWSE -> LibraryBrowseScreen(
+                LibraryTab.BROWSE -> if (state.homeShelves.deferInitialCatalogLoad) {
+                    SeriesCatalogScreen(
+                        query = "",
+                        initialFilter = SeriesCatalogFilter(libraryId = state.selectedLibraryId),
+                        persistenceKey = "kavita-library-series-${state.selectedLibraryId}",
+                        appPreferences = appPreferences,
+                        onAppPreferencesChange = onAppPreferencesChange,
+                        libraryOptions = state.libraries,
+                        books = state.books,
+                        loadAllPages = false,
+                        modifier = Modifier.weight(1f),
+                        loader = seriesCatalogLoader,
+                        imageLoader = catalogImageLoader,
+                        onSeriesSelected = { series ->
+                            onSeriesNameSelected(series.name)
+                            onSeriesSelected(series.id)
+                        }
+                    )
+                } else LibraryBrowseScreen(
                     state = state,
                     modifier = Modifier.weight(1f),
                     onLoadMoreLibraryBooks = onLoadMoreLibraryBooks,
@@ -7682,12 +7900,14 @@ internal fun PullToRefreshLayout(
     }
     Box(modifier = modifier.nestedScroll(pullState.nestedScrollConnection)) {
         content()
-        PullToRefreshContainer(
-            state = pullState,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .testTag("pull_to_refresh_indicator")
-        )
+        if (isRefreshing || pullState.isRefreshing) {
+            PullToRefreshContainer(
+                state = pullState,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .testTag("pull_to_refresh_indicator")
+            )
+        }
     }
 }
 
@@ -8311,7 +8531,7 @@ private fun LibraryBooks(
                     if (state.isCatalogComplete) {
                         stringResource(R.string.browse_updating_cached_catalog)
                     } else {
-                        stringResource(R.string.browse_caching_full_library)
+                        stringResource(R.string.browse_loading_books)
                     }
                 )
             }
@@ -8636,7 +8856,9 @@ private fun LibraryJumpRail(
     targets: List<Pair<Char, Int>>,
     direction: SortDirection,
     modifier: Modifier,
-    onJump: (Int) -> Unit
+    enabledLabels: Set<Char>? = null,
+    onJump: (Int) -> Unit,
+    onUnavailableJump: ((Char) -> Unit)? = null
 ) {
     val targetsByLabel = targets.toMap()
     Column(
@@ -8651,6 +8873,7 @@ private fun LibraryJumpRail(
     ) {
         catalogJumpRailLabels(direction).forEach { label ->
             val index = targetsByLabel[label]
+            val canLoad = index == null && enabledLabels?.contains(label) == true && onUnavailableJump != null
             val jumpDescription = stringResource(R.string.browse_jump_to, label.toString())
             val unavailableDescription = stringResource(
                 R.string.browse_jump_unavailable,
@@ -8661,6 +8884,10 @@ private fun LibraryJumpRail(
                     if (index != null) {
                         Modifier
                             .clickable { onJump(index) }
+                            .semantics { contentDescription = jumpDescription }
+                    } else if (canLoad) {
+                        Modifier
+                            .clickable { onUnavailableJump?.invoke(label) }
                             .semantics { contentDescription = jumpDescription }
                     } else {
                         Modifier.semantics {
@@ -8674,7 +8901,7 @@ private fun LibraryJumpRail(
                 Text(
                     text = label.toString(),
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (index != null) {
+                    color = if (index != null || canLoad) {
                         MaterialTheme.colorScheme.primary
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
@@ -12072,6 +12299,7 @@ private fun SeriesGroupingControls(
 @OptIn(ExperimentalLayoutApi::class)
 private fun SeriesDetails(
     seriesKey: String,
+    seriesNameHint: String? = null,
     books: List<BookSummary>,
     libraries: List<LibrarySummary>,
     groupingMode: SeriesGroupingMode,
@@ -12096,6 +12324,8 @@ private fun SeriesDetails(
         .filter { (it.seriesId ?: it.seriesName) == seriesKey }
         .sortedWith(compareBy<BookSummary> { it.seriesIndex ?: Double.MAX_VALUE }.thenBy { it.title })
     val seriesDisplayName = localBooks.firstOrNull()?.seriesName
+        ?.takeUnless { it == seriesKey }
+        ?: seriesNameHint?.takeUnless { it == seriesKey }
         ?: stringResource(R.string.browse_series)
     val localDetail = SeriesDetailInfo(
         id = seriesKey,
@@ -12114,17 +12344,27 @@ private fun SeriesDetails(
             isRefreshing = false
         }
     }
+    val displayedDetail = detail.copy(
+        name = detail.name.takeUnless { it.isBlank() || it == seriesKey || it == "Series" } ?: seriesDisplayName,
+        books = detail.books.map { book ->
+            if (book.seriesName.isNullOrBlank() || book.seriesName == seriesKey || book.seriesName == "Series") {
+                book.copy(seriesName = seriesDisplayName)
+            } else {
+                book
+            }
+        }
+    )
     val onRefresh: () -> Unit = {
         if (!isRefreshing) {
             isRefreshing = true
             reloadKey += 1
         }
     }
-    val bookSections = seriesBookSections(detail.books, libraries, groupingMode)
-    val completion = if (detail.bookCount > 0) detail.readCount.toFloat() / detail.bookCount else 0f
+    val bookSections = seriesBookSections(displayedDetail.books, libraries, groupingMode)
+    val completion = if (displayedDetail.bookCount > 0) displayedDetail.readCount.toFloat() / displayedDetail.bookCount else 0f
     val seriesDownloadCandidates = seriesSelectableFiles(
         booksWithLocalFilePathOverrides(
-            books = detail.books,
+            books = displayedDetail.books,
             localFilePathOverrides = downloadState?.localFilePathOverrides.orEmpty()
         )
     )
@@ -12245,8 +12485,8 @@ private fun SeriesDetails(
         item(span = { GridItemSpan(maxLineSpan) }) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 OrbitEyebrow(stringResource(R.string.browse_series))
-                Text(detail.name, style = MaterialTheme.typography.headlineSmall)
-                detail.authors.takeIf { it.isNotEmpty() }?.let {
+                Text(displayedDetail.name, style = MaterialTheme.typography.headlineSmall)
+                displayedDetail.authors.takeIf { it.isNotEmpty() }?.let {
                     Text(
                         stringResource(R.string.browse_by_authors, it.joinToString()),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -12255,8 +12495,8 @@ private fun SeriesDetails(
                 Text(
                     stringResource(
                         R.string.browse_series_books_read,
-                        detail.bookCount,
-                        detail.readCount
+                        displayedDetail.bookCount,
+                        displayedDetail.readCount
                     ),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
