@@ -10,8 +10,10 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.provider.OpenableColumns
@@ -27,6 +29,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.Window
 import android.view.WindowManager
+import android.webkit.WebView
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ArrayAdapter
@@ -68,6 +71,7 @@ import java.util.Locale
 import java.util.UUID
 import kotlin.math.abs
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineStart
@@ -78,6 +82,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.readium.navigator.media.tts.AndroidTtsNavigatorFactory
 import org.readium.navigator.media.tts.android.AndroidTtsEngine
 import com.vangeaux.lagrange.epubtts.EpubTtsModuleImpl
@@ -120,6 +125,50 @@ internal sealed interface ReadiumEpubOpenResult {
     data class Opened(val publication: Publication) : ReadiumEpubOpenResult
     data class Error(val message: String) : ReadiumEpubOpenResult
 }
+
+internal data class PendingEpubPagination(
+    val pageIndex: Int,
+    val pageCount: Int,
+    val locator: Locator
+)
+
+internal fun shouldUseSoftwareEpubRendering(manufacturer: String, model: String): Boolean =
+    manufacturer.equals("Bigme", ignoreCase = true) &&
+        model.equals("HiBreak", ignoreCase = true)
+
+internal fun isHealthyEpubRendererProbeResult(value: String?): Boolean {
+    val decoded = decodeJavascriptString(value) ?: return false
+    val payload = runCatching { JSONObject(decoded) }.getOrNull() ?: return false
+    return payload.optString("marker") == EPUB_RENDERER_PROBE_MARKER &&
+        payload.optString("readyState") in setOf("interactive", "complete") &&
+        payload.optBoolean("hasBody") &&
+        payload.optBoolean("hasReadium") &&
+        payload.optInt("viewportWidth") > 0 &&
+        payload.optInt("viewportHeight") > 0 &&
+        payload.optInt("contentWidth") > 0 &&
+        payload.optInt("contentHeight") > 0
+}
+
+private const val EPUB_RENDERER_PROBE_MARKER = "lagrange-epub-renderer-v1"
+private const val EPUB_RENDERER_PROBE_TIMEOUT_MILLIS = 20_000L
+private const val EPUB_RENDERER_PROBE_ATTEMPT_TIMEOUT_MILLIS = 2_500L
+private const val EPUB_RENDERER_PROBE_RETRY_MILLIS = 250L
+private const val EPUB_RENDERER_PROBE_SCRIPT = """
+    (() => {
+        const root = document.documentElement;
+        const body = document.body;
+        return JSON.stringify({
+            marker: 'lagrange-epub-renderer-v1',
+            readyState: document.readyState,
+            hasBody: !!body,
+            hasReadium: typeof readium === 'object' && readium !== null,
+            viewportWidth: window.innerWidth || 0,
+            viewportHeight: window.innerHeight || 0,
+            contentWidth: Math.max(root ? root.scrollWidth : 0, body ? body.scrollWidth : 0),
+            contentHeight: Math.max(root ? root.scrollHeight : 0, body ? body.scrollHeight : 0)
+        });
+    })();
+"""
 
 internal suspend fun openReadiumEpub(
     context: Context,
@@ -766,13 +815,17 @@ internal fun shouldLoadNextAnnotationPage(
 }
 
 @OptIn(ExperimentalReadiumApi::class)
-class ReadiumEpubReaderActivity : FragmentActivity() {
+open class ReadiumEpubReaderActivity : FragmentActivity() {
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(AppLocale.wrap(newBase))
     }
 
     private var publication: Publication? = null
     private var navigator: EpubNavigatorFragment? = null
+    private var rendererHealthJob: Job? = null
+    private var rendererHealthConfirmed = false
+    private var pendingRendererPagination: PendingEpubPagination? = null
+    private var pendingRendererLocator: Locator? = null
     private var lastRecordedVisualLocator: Locator? = null
     // Newer position written while the reader was stopped (by background read-aloud), until the
     // visual navigator reaches it; with its deadline.
@@ -1404,6 +1457,10 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
             return
         }
         publication = openedPublication
+        rendererHealthJob?.cancel()
+        rendererHealthConfirmed = false
+        pendingRendererPagination = null
+        pendingRendererLocator = null
         publicationLanguages = openedPublication.metadata.languages
         fallbackContentLanguage = epubNavigatorLanguage(currentContentLanguage())
         ttsAvailable = !isPreview && AndroidTtsNavigatorFactory(application, openedPublication) != null
@@ -1422,9 +1479,12 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
         readingSessionReporter.start(locatorOverallPercent(openedPublication, initialLocator))
         val paginationListener = object : EpubNavigatorFragment.PaginationListener {
             override fun onPageChanged(pageIndex: Int, totalPages: Int, locator: Locator) {
-                currentPage = pageIndex.coerceAtLeast(0)
-                currentPageCount = totalPages.coerceAtLeast(1)
-                recordVisualLocator(locator)
+                val pagination = PendingEpubPagination(pageIndex, totalPages, locator)
+                if (!rendererHealthConfirmed) {
+                    pendingRendererPagination = pagination
+                    return
+                }
+                applyEpubPagination(pagination)
             }
         }
         val navigatorFactory = EpubNavigatorFactory(openedPublication)
@@ -1480,20 +1540,17 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
         )
         navigator = fragment
         restoreRetainedMediaOverlayPlayback()
-        if (epubAnnotationFeaturesEnabled(intent)) {
-            fragment.addDecorationListener(HIGHLIGHT_DECORATION_GROUP, highlightDecorationListener)
-            loadHighlights(openedPublication)
-        } else if (isPreview) {
-            applyPreviewAnnotationDecoration(fragment, openedPublication)
-        }
-        startEpubImageGestureBridge(fragment)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 fragment.currentLocator.collect { locator ->
-                    recordVisualLocator(locator)
-                    pendingAnnotationReanchor?.let { target ->
-                        pendingAnnotationReanchor = null
-                        if (locator != target) fragment.go(target)
+                    if (rendererHealthConfirmed) {
+                        recordVisualLocator(locator)
+                        pendingAnnotationReanchor?.let { target ->
+                            pendingAnnotationReanchor = null
+                            if (locator != target) fragment.go(target)
+                        }
+                    } else {
+                        pendingRendererLocator = locator
                     }
                     if (highlightAnnotations.isNotEmpty()) {
                         refreshHighlightDecorations()
@@ -1501,10 +1558,101 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
                 }
             }
         }
-        progressView?.visibility = View.GONE
         applyReaderPadding()
+        startRendererHealthCheck(fragment, openedPublication)
+    }
+
+    private fun applyEpubPagination(pagination: PendingEpubPagination) {
+        currentPage = pagination.pageIndex.coerceAtLeast(0)
+        currentPageCount = pagination.pageCount.coerceAtLeast(1)
+        recordVisualLocator(pagination.locator)
+    }
+
+    private fun startRendererHealthCheck(
+        fragment: EpubNavigatorFragment,
+        openedPublication: Publication
+    ) {
+        rendererHealthJob?.cancel()
+        if (this !is SoftwareRenderedEpubReaderActivity) {
+            rendererHealthJob = null
+            rendererHealthConfirmed = true
+            completeRendererStartup(fragment, openedPublication)
+            return
+        }
+        rendererHealthJob = lifecycleScope.launch {
+            val deadline = SystemClock.elapsedRealtime() + EPUB_RENDERER_PROBE_TIMEOUT_MILLIS
+            var healthy = false
+            while (
+                !healthy &&
+                navigator === fragment &&
+                SystemClock.elapsedRealtime() < deadline
+            ) {
+                val webView = fragment.view?.largestVisibleWebView()
+                val result = webView?.let { candidate ->
+                    withTimeoutOrNull(EPUB_RENDERER_PROBE_ATTEMPT_TIMEOUT_MILLIS) {
+                        val response = CompletableDeferred<String?>()
+                        candidate.evaluateJavascript(EPUB_RENDERER_PROBE_SCRIPT) { value ->
+                            response.complete(value)
+                        }
+                        response.await()
+                    }
+                }
+                healthy = isHealthyEpubRendererProbeResult(result)
+                if (!healthy) delay(EPUB_RENDERER_PROBE_RETRY_MILLIS)
+            }
+            if (navigator !== fragment || isFinishing || isDestroyed) return@launch
+            if (!healthy) {
+                pendingRendererPagination = null
+                pendingRendererLocator = null
+                showError(getString(R.string.epub_open_error_open_failed))
+                return@launch
+            }
+
+            rendererHealthConfirmed = true
+            completeRendererStartup(fragment, openedPublication)
+        }
+    }
+
+    private fun completeRendererStartup(
+        fragment: EpubNavigatorFragment,
+        openedPublication: Publication
+    ) {
+        val pagination = pendingRendererPagination.also { pendingRendererPagination = null }
+        val locator = pendingRendererLocator.also { pendingRendererLocator = null }
+        pagination?.let(::applyEpubPagination)
+        if (locator != null && pagination?.locator != locator) recordVisualLocator(locator)
+        pendingAnnotationReanchor?.let { target ->
+            pendingAnnotationReanchor = null
+            if (fragment.currentLocator.value != target) fragment.go(target)
+        }
+
+        if (epubAnnotationFeaturesEnabled(intent)) {
+            fragment.addDecorationListener(HIGHLIGHT_DECORATION_GROUP, highlightDecorationListener)
+            loadHighlights(openedPublication)
+        } else if (isPreview) {
+            applyPreviewAnnotationDecoration(fragment, openedPublication)
+        }
+        startEpubImageGestureBridge(fragment)
+        progressView?.visibility = View.GONE
         if (showTapZoneTutorialAfterChanges && !tapZoneTutorialHasShown) showTapZoneTutorial()
         restoreTtsPositionAfterRecreation(openedPublication)
+    }
+
+    private fun View.largestVisibleWebView(): WebView? {
+        val candidates = mutableListOf<WebView>()
+        fun collect(view: View) {
+            if (view is WebView) candidates += view
+            if (view is ViewGroup) {
+                for (index in 0 until view.childCount) collect(view.getChildAt(index))
+            }
+        }
+        collect(this)
+        return candidates
+            .filter { it.isShown && it.width > 0 && it.height > 0 }
+            .maxByOrNull { candidate ->
+                val visible = Rect()
+                if (candidate.getGlobalVisibleRect(visible)) visible.width() * visible.height() else 0
+            }
     }
 
     private fun showListenChoices() {
@@ -2947,6 +3095,10 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
      * the stored position is still the one this reader wrote.
      */
     private fun recordVisualLocator(locator: Locator) {
+        if (!rendererHealthConfirmed) {
+            pendingRendererLocator = locator
+            return
+        }
         val last = lastRecordedVisualLocator
         foregroundSyncTarget?.let { target ->
             val expired = SystemClock.elapsedRealtime() > foregroundSyncDeadline
@@ -3302,7 +3454,9 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
                 putExtra(EXTRA_RESULT_PAGE, currentPage)
                 putExtra(EXTRA_RESULT_PAGE_COUNT, currentPageCount)
                 putExtra(EXTRA_RESULT_PERCENT, currentPercent)
-                navigator?.currentLocator?.value?.toJSON()?.toString()?.let {
+                (navigator?.currentLocator?.value?.takeIf { rendererHealthConfirmed } ?: restoredLocator)
+                    ?.toJSON()?.toString()
+                    ?.let {
                     putExtra(EXTRA_RESULT_LOCATOR_JSON, it)
                 }
             }
@@ -3445,7 +3599,10 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
     internal fun isForegroundSyncPendingForTest(): Boolean = foregroundSyncTarget != null
 
     /** Feeds a visual-navigator position report through the recording rules; for instrumented tests. */
-    internal fun recordVisualLocatorForTest(locator: Locator) = recordVisualLocator(locator)
+    internal fun recordVisualLocatorForTest(locator: Locator) {
+        rendererHealthConfirmed = true
+        recordVisualLocator(locator)
+    }
 
     override fun onStop() {
         if (!isChangingConfigurations) stoppedSinceLastStart = true
@@ -3471,7 +3628,9 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        outState.putReaderLocator(navigator?.currentLocator?.value ?: restoredLocator)
+        outState.putReaderLocator(
+            navigator?.currentLocator?.value?.takeIf { rendererHealthConfirmed } ?: restoredLocator
+        )
         outState.putEpubTtsLocator(
             ttsServiceBinder?.state?.value
                 ?.takeIf { it.ownerToken == ttsOwnerToken && it.readerKey == readerKey }
@@ -3499,6 +3658,8 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
             mediaOverlayPlayback.player?.removeListener(listener)
         }
         mediaOverlayPlayerListener = null
+        rendererHealthJob?.cancel()
+        rendererHealthJob = null
         super.onDestroy()
         publication?.close()
         publication = null
@@ -3578,7 +3739,14 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
             initialAnnotationId: String? = null,
             initialAnnotationColor: String? = null,
             initialAnnotationStyle: String? = null
-        ): Intent = Intent(context, ReadiumEpubReaderActivity::class.java)
+        ): Intent = Intent(
+            context,
+            if (shouldUseSoftwareEpubRendering(Build.MANUFACTURER, Build.MODEL)) {
+                SoftwareRenderedEpubReaderActivity::class.java
+            } else {
+                ReadiumEpubReaderActivity::class.java
+            }
+        )
             .putExtra(EXTRA_FILE_PATH, file.absolutePath)
             .putExtra(EXTRA_FILE_ID, fileId)
             .putExtra(EXTRA_BOOK_ID, bookId)
@@ -3615,6 +3783,9 @@ class ReadiumEpubReaderActivity : FragmentActivity() {
         }
     }
 }
+
+/** Bigme HiBreak's WebView 113 can block hardware frame submission and poison later renderer starts. */
+class SoftwareRenderedEpubReaderActivity : ReadiumEpubReaderActivity()
 
 internal fun closeEpubReaderPlayback(
     closeMediaOverlayPlayback: () -> Unit,
