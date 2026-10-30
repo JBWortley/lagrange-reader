@@ -7574,7 +7574,9 @@ private fun HomeFeed(
     ) {
         if (!onDeckEnabled) emptyList()
         else if (serverShelves.providesBooks(HomeSection.ON_DECK)) {
-            serverShelves.booksBySection[HomeSection.ON_DECK].orEmpty()
+            visibleProviderOnDeckBooks(
+                serverShelves.booksBySection[HomeSection.ON_DECK].orEmpty()
+            )
         } else generatedOnDeckBooks(
             books = libraryScopedBooks,
             enabled = true,
@@ -7588,7 +7590,9 @@ private fun HomeFeed(
     val currentlyReading = currentlyReadingAll.take(HOME_PREVIEW_LIMIT)
     val onDeck = onDeckAll.take(HOME_PREVIEW_LIMIT)
     val onDeckSeriesAll = if (serverShelves.isServerProvided) {
-        val seriesBooks = serverShelves.seriesBySection[HomeSection.ON_DECK].orEmpty()
+        val seriesBooks = visibleProviderOnDeckBooks(
+            serverShelves.seriesBySection[HomeSection.ON_DECK].orEmpty()
+        )
         seriesBooks.map { book -> (book.seriesName ?: book.title) to book }
     } else emptyList()
     val wantToRead = wantToReadAll.take(HOME_PREVIEW_LIMIT)
@@ -8759,7 +8763,9 @@ internal fun HomeSectionScreen(
             HomeSection.ON_DECK -> when {
                 !onDeckEnabled -> emptyList()
                 scopedServerShelves.providesBooks(HomeSection.ON_DECK) ->
-                    scopedServerShelves.booksBySection[HomeSection.ON_DECK].orEmpty()
+                    visibleProviderOnDeckBooks(
+                        scopedServerShelves.booksBySection[HomeSection.ON_DECK].orEmpty()
+                    )
                 else -> generatedOnDeckBooks(books = books, enabled = true, limit = null)
             }
             HomeSection.WANT_TO_READ -> wantToReadBooks(books, limit = null)
@@ -13455,6 +13461,14 @@ internal fun onDeckBooks(
         }
         .let { result -> limit?.let(result::take) ?: result }
 }
+
+internal fun visibleProviderOnDeckBooks(books: List<BookSummary>): List<BookSummary> =
+    books.filterNot { book ->
+        book.isRead ||
+            book.readStatus?.isCompletedStatus() == true ||
+            book.readStatus == BookReadStatus.READING ||
+            book.readStatus == BookReadStatus.REREADING
+    }
 
 internal fun wantToReadBooks(
     books: List<BookSummary>,
