@@ -22,6 +22,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
@@ -49,6 +50,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.foundation.text.KeyboardOptions
@@ -5826,6 +5828,31 @@ private fun LibraryReaderConfiguration(
             }
         }
         if (selectedLibrary != null) {
+            AppPreferenceSwitchRow(
+                title = stringResource(R.string.settings_volume_page_navigation),
+                summary = stringResource(R.string.settings_volume_page_navigation_summary),
+                checked = value.volumeButtonPageNavigation,
+                testTag = "options-reading-volume-button-navigation",
+                onCheckedChange = { enabled ->
+                    onPreferencesChange(
+                        selectedLibrary.id,
+                        value.copy(volumeButtonPageNavigation = enabled)
+                    )
+                }
+            )
+            AppPreferenceSwitchRow(
+                title = stringResource(R.string.settings_swap_volume_buttons),
+                summary = stringResource(R.string.settings_swap_volume_buttons_summary),
+                checked = value.reverseVolumeButtonNavigation,
+                enabled = value.volumeButtonPageNavigation,
+                testTag = "options-reading-reverse-volume-button-navigation",
+                onCheckedChange = { reversed ->
+                    onPreferencesChange(
+                        selectedLibrary.id,
+                        value.copy(reverseVolumeButtonNavigation = reversed)
+                    )
+                }
+            )
             Text(
                 stringResource(R.string.settings_reading_direction),
                 style = MaterialTheme.typography.titleMedium
@@ -5860,6 +5887,18 @@ private fun LibraryReaderConfiguration(
                 testTagPrefix = "options-reading-tap-zone"
             )
             AppPreferenceSwitchRow(
+                title = stringResource(R.string.settings_show_page_progress),
+                summary = stringResource(R.string.settings_show_page_progress_summary),
+                checked = value.showPageProgress,
+                testTag = "options-reading-show-page-progress",
+                onCheckedChange = { enabled ->
+                    onPreferencesChange(
+                        selectedLibrary.id,
+                        value.copy(showPageProgress = enabled)
+                    )
+                }
+            )
+            AppPreferenceSwitchRow(
                 title = stringResource(R.string.settings_prefer_server_progress),
                 summary = stringResource(R.string.settings_prefer_server_progress_summary),
                 checked = value.preferServerProgressOnReopen,
@@ -5871,24 +5910,22 @@ private fun LibraryReaderConfiguration(
                     )
                 }
             )
-            Text(
-                stringResource(R.string.settings_typography),
-                style = MaterialTheme.typography.titleMedium
+            ReaderAppearanceSettings(
+                value = value,
+                onPreferencesChange = { next ->
+                    onPreferencesChange(selectedLibrary.id, next)
+                },
+                testTagPrefix = "options-reading",
+                showOptionsTheme = true,
+                showBackgroundTheme = true
             )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                EPUB_THEME_OPTIONS.forEach { theme ->
-                    FilterChip(
-                        selected = value.theme == theme,
-                        onClick = {
-                            onPreferencesChange(selectedLibrary.id, value.copy(theme = theme))
-                        },
-                        label = { Text(stringResource(theme.labelRes)) }
-                    )
-                }
-            }
+            ReaderTextColorSettings(
+                value = value,
+                onPreferencesChange = { next ->
+                    onPreferencesChange(selectedLibrary.id, next)
+                },
+                testTagPrefix = "options-reading"
+            )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -5954,6 +5991,13 @@ private fun LibraryReaderConfiguration(
                     onPreferencesChange(
                         selectedLibrary.id,
                         value.copy(pdfPageGapDp = pageGapDp)
+                    )
+                },
+                joinFacingPages = value.joinPdfFacingPages,
+                onJoinFacingPagesChange = { enabled ->
+                    onPreferencesChange(
+                        selectedLibrary.id,
+                        value.copy(joinPdfFacingPages = enabled)
                     )
                 },
                 invertColors = value.invertPdfColors,
@@ -6201,6 +6245,235 @@ private fun ReaderTapZoneSettings(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
+private fun ReaderThemeChips(
+    selected: EpubReaderTheme,
+    presetSelected: Boolean,
+    testTagPrefix: String,
+    onSelected: (EpubReaderTheme) -> Unit,
+    showCustom: Boolean = false,
+    customSelected: Boolean = false,
+    onCustomSelected: () -> Unit = {}
+) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        EPUB_THEME_OPTIONS.forEach { theme ->
+            FilterChip(
+                selected = presetSelected && selected == theme,
+                onClick = { onSelected(theme) },
+                label = { Text(stringResource(theme.labelRes)) },
+                modifier = Modifier.testTag(
+                    "$testTagPrefix-${theme.name.lowercase()}"
+                )
+            )
+        }
+        if (showCustom) {
+            FilterChip(
+                selected = customSelected,
+                onClick = onCustomSelected,
+                label = { Text(stringResource(R.string.sheet_custom_background_custom)) },
+                modifier = Modifier.testTag("$testTagPrefix-custom")
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ReaderTextColorSettings(
+    value: LibraryReaderPreferences,
+    onPreferencesChange: (LibraryReaderPreferences) -> Unit,
+    testTagPrefix: String
+) {
+    var customTextColorDialogVisible by remember { mutableStateOf(false) }
+    val systemDarkMode = isSystemInDarkTheme()
+    val defaultTextColor = defaultReaderTextColor(
+        customBackgroundActive = activeCustomReaderBackground(value) != null,
+        presetTextColor = cssHexColorInt(value.backgroundTheme.foregroundCss),
+        systemDarkMode = systemDarkMode
+    )
+    Text(
+        stringResource(R.string.sheet_text_color),
+        style = MaterialTheme.typography.titleMedium
+    )
+    Text(
+        stringResource(R.string.sheet_text_color_summary),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.outline
+    )
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        FilterChip(
+            selected = !value.useCustomTextColor,
+            onClick = {
+                if (value.useCustomTextColor) {
+                    onPreferencesChange(value.copy(useCustomTextColor = false))
+                }
+            },
+            label = { Text(stringResource(R.string.sheet_text_color_default)) },
+            modifier = Modifier.testTag("$testTagPrefix-text-color-default")
+        )
+        FilterChip(
+            selected = value.useCustomTextColor,
+            onClick = {
+                when {
+                    value.customTextColor == null ->
+                        customTextColorDialogVisible = true
+                    !value.useCustomTextColor ->
+                        onPreferencesChange(value.copy(useCustomTextColor = true))
+                }
+            },
+            label = { Text(stringResource(R.string.sheet_text_color_custom)) },
+            modifier = Modifier.testTag("$testTagPrefix-text-color-custom")
+        )
+    }
+    if (value.useCustomTextColor) {
+        AppPreferenceSelectionRow(
+            title = stringResource(R.string.sheet_text_color_custom),
+            value = value.customTextColor?.let(::customReaderBackgroundCss)
+                ?: stringResource(R.string.sheet_text_color_default),
+            summary = stringResource(R.string.sheet_text_color_custom_summary),
+            testTag = "$testTagPrefix-text-color",
+            onClick = { customTextColorDialogVisible = true }
+        )
+    }
+    if (customTextColorDialogVisible) {
+        ReaderCustomTextColorDialog(
+            initialColor = value.customTextColor,
+            pageBackgroundColor = readerContentBackgroundColor(value),
+            defaultTextColor = defaultTextColor,
+            testTagPrefix = testTagPrefix,
+            onApply = { color ->
+                onPreferencesChange(
+                    value.copy(
+                        useCustomTextColor = true,
+                        customTextColor = color
+                    )
+                )
+                customTextColorDialogVisible = false
+            },
+            onReset = {
+                onPreferencesChange(
+                    value.copy(
+                        useCustomTextColor = false,
+                        customTextColor = null
+                    )
+                )
+                customTextColorDialogVisible = false
+            },
+            onDismiss = { customTextColorDialogVisible = false }
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ReaderAppearanceSettings(
+    value: LibraryReaderPreferences,
+    onPreferencesChange: (LibraryReaderPreferences) -> Unit,
+    testTagPrefix: String,
+    showOptionsTheme: Boolean,
+    showBackgroundTheme: Boolean
+) {
+    var customBackgroundDialogVisible by remember { mutableStateOf(false) }
+
+    if (showOptionsTheme) {
+        Text(
+            stringResource(R.string.sheet_reader_theme_options),
+            style = MaterialTheme.typography.titleMedium
+        )
+        Text(
+            stringResource(R.string.sheet_reader_theme_options_summary),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline
+        )
+        ReaderThemeChips(
+            selected = value.theme,
+            presetSelected = true,
+            testTagPrefix = "$testTagPrefix-theme",
+            onSelected = { theme -> onPreferencesChange(value.copy(theme = theme)) }
+        )
+    }
+
+    if (showBackgroundTheme) {
+        if (showOptionsTheme) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+        }
+        Text(
+            stringResource(R.string.sheet_reading_background),
+            style = MaterialTheme.typography.titleMedium
+        )
+        Text(
+            stringResource(R.string.sheet_reading_background_summary),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline
+        )
+        ReaderThemeChips(
+            selected = value.backgroundTheme,
+            presetSelected = !value.useCustomBackground,
+            testTagPrefix = "$testTagPrefix-background-theme",
+            onSelected = { theme ->
+                onPreferencesChange(
+                    value.copy(
+                        backgroundTheme = theme,
+                        useCustomBackground = false
+                    )
+                )
+            },
+            showCustom = true,
+            customSelected = value.useCustomBackground,
+            onCustomSelected = {
+                when {
+                    value.customBackgroundColor == null ->
+                        customBackgroundDialogVisible = true
+                    !value.useCustomBackground ->
+                        onPreferencesChange(value.copy(useCustomBackground = true))
+                }
+            }
+        )
+        if (value.useCustomBackground) {
+            AppPreferenceSelectionRow(
+                title = stringResource(R.string.sheet_custom_background),
+                value = value.customBackgroundColor?.let(::customReaderBackgroundCss)
+                    ?: stringResource(R.string.sheet_custom_background_default),
+                summary = stringResource(R.string.sheet_custom_background_summary),
+                testTag = "$testTagPrefix-custom-background",
+                onClick = { customBackgroundDialogVisible = true }
+            )
+        }
+        if (customBackgroundDialogVisible) {
+            ReaderCustomBackgroundDialog(
+                initialColor = value.customBackgroundColor,
+                testTagPrefix = testTagPrefix,
+                onApply = { color ->
+                    onPreferencesChange(
+                        value.copy(
+                            useCustomBackground = true,
+                            customBackgroundColor = color
+                        )
+                    )
+                    customBackgroundDialogVisible = false
+                },
+                onReset = {
+                    onPreferencesChange(
+                        value.copy(
+                            useCustomBackground = false,
+                            customBackgroundColor = null
+                        )
+                    )
+                    customBackgroundDialogVisible = false
+                },
+                onDismiss = { customBackgroundDialogVisible = false }
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
 internal fun ReaderConfigurationControls(
     value: LibraryReaderPreferences,
     onPreferencesChange: (LibraryReaderPreferences) -> Unit,
@@ -6272,28 +6545,19 @@ internal fun ReaderConfigurationControls(
         testTag = "$testTagPrefix-tap-zone-tutorial-after-changes",
         onCheckedChange = onShowTapZoneTutorialAfterChangesChange
     )
-    if (format != ReaderConfigurationFormat.COMIC) {
-        Text(
-            stringResource(R.string.settings_typography),
-            style = MaterialTheme.typography.titleMedium
-        )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            EPUB_THEME_OPTIONS.forEach { theme ->
-                FilterChip(
-                    selected = value.theme == theme,
-                    onClick = { onPreferencesChange(value.copy(theme = theme)) },
-                    label = { Text(stringResource(theme.labelRes)) },
-                    modifier = Modifier.testTag(
-                        "$testTagPrefix-theme-${theme.name.lowercase()}"
-                    )
-                )
-            }
-        }
-    }
+    ReaderAppearanceSettings(
+        value = value,
+        onPreferencesChange = onPreferencesChange,
+        testTagPrefix = testTagPrefix,
+        showOptionsTheme = format != ReaderConfigurationFormat.COMIC,
+        showBackgroundTheme = format == ReaderConfigurationFormat.EPUB
+    )
     if (format == ReaderConfigurationFormat.EPUB) {
+        ReaderTextColorSettings(
+            value = value,
+            onPreferencesChange = onPreferencesChange,
+            testTagPrefix = testTagPrefix
+        )
         AppPreferenceSwitchRow(
             title = stringResource(R.string.settings_prefer_server_progress),
             summary = stringResource(R.string.settings_prefer_server_progress_summary),
@@ -6530,6 +6794,225 @@ private fun ReaderSpreadSettings(
             onPreferencesChange(
                 value.copy(twoPageSpread = if (enabled) ReaderSpreadMode.AUTO else ReaderSpreadMode.OFF)
             )
+        }
+    )
+}
+
+@Composable
+private fun RgbComponentField(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = { next -> onValueChange(next.filter(Char::isDigit).take(3)) },
+        label = { Text(label) },
+        modifier = modifier,
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+    )
+}
+
+@Composable
+private fun ReaderCustomBackgroundDialog(
+    initialColor: Int?,
+    testTagPrefix: String,
+    onApply: (Int) -> Unit,
+    onReset: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    fun initialComponent(shift: Int): String =
+        initialColor?.let { ((it shr shift) and 0xFF).toString() }.orEmpty()
+
+    var red by remember(initialColor) { mutableStateOf(initialComponent(16)) }
+    var green by remember(initialColor) { mutableStateOf(initialComponent(8)) }
+    var blue by remember(initialColor) { mutableStateOf(initialComponent(0)) }
+    val redValue = parseRgbComponent(red)
+    val greenValue = parseRgbComponent(green)
+    val blueValue = parseRgbComponent(blue)
+    val color = if (redValue != null && greenValue != null && blueValue != null) {
+        customReaderBackgroundColor(redValue, greenValue, blueValue)
+    } else {
+        null
+    }
+    val hasAnyInput = red.isNotEmpty() || green.isNotEmpty() || blue.isNotEmpty()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.sheet_custom_background_dialog_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    RgbComponentField(
+                        label = stringResource(R.string.sheet_custom_background_red),
+                        value = red,
+                        onValueChange = { red = it },
+                        modifier = Modifier.weight(1f).testTag("$testTagPrefix-custom-background-red")
+                    )
+                    RgbComponentField(
+                        label = stringResource(R.string.sheet_custom_background_green),
+                        value = green,
+                        onValueChange = { green = it },
+                        modifier = Modifier.weight(1f).testTag("$testTagPrefix-custom-background-green")
+                    )
+                    RgbComponentField(
+                        label = stringResource(R.string.sheet_custom_background_blue),
+                        value = blue,
+                        onValueChange = { blue = it },
+                        modifier = Modifier.weight(1f).testTag("$testTagPrefix-custom-background-blue")
+                    )
+                }
+                Text(
+                    stringResource(R.string.sheet_custom_background_preview),
+                    style = MaterialTheme.typography.titleSmall
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(
+                            color?.let { Color(it) }
+                                ?: MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (color != null) {
+                        Text(
+                            text = customReaderBackgroundCss(color),
+                            color = Color(customReaderBackgroundTextColor(color)),
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    }
+                }
+                if (color == null && hasAnyInput) {
+                    Text(
+                        stringResource(R.string.sheet_custom_background_invalid),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { color?.let(onApply) },
+                enabled = color != null
+            ) {
+                Text(stringResource(R.string.sheet_custom_background_apply))
+            }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onReset) {
+                    Text(stringResource(R.string.sheet_custom_background_reset))
+                }
+                TextButton(onClick = onDismiss) {
+                    Text(stringResource(R.string.common_cancel))
+                }
+            }
+        }
+    )
+}
+
+@Composable
+private fun ReaderCustomTextColorDialog(
+    initialColor: Int?,
+    pageBackgroundColor: Int,
+    defaultTextColor: Int,
+    testTagPrefix: String,
+    onApply: (Int) -> Unit,
+    onReset: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    fun initialComponent(shift: Int): String =
+        initialColor?.let { ((it shr shift) and 0xFF).toString() }.orEmpty()
+
+    var red by remember(initialColor) { mutableStateOf(initialComponent(16)) }
+    var green by remember(initialColor) { mutableStateOf(initialComponent(8)) }
+    var blue by remember(initialColor) { mutableStateOf(initialComponent(0)) }
+    val redValue = parseRgbComponent(red)
+    val greenValue = parseRgbComponent(green)
+    val blueValue = parseRgbComponent(blue)
+    val color = if (redValue != null && greenValue != null && blueValue != null) {
+        customReaderBackgroundColor(redValue, greenValue, blueValue)
+    } else {
+        null
+    }
+    val hasAnyInput = red.isNotEmpty() || green.isNotEmpty() || blue.isNotEmpty()
+    val previewTextColor = color ?: defaultTextColor
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.sheet_text_color_dialog_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    RgbComponentField(
+                        label = stringResource(R.string.sheet_custom_background_red),
+                        value = red,
+                        onValueChange = { red = it },
+                        modifier = Modifier.weight(1f).testTag("$testTagPrefix-text-color-red")
+                    )
+                    RgbComponentField(
+                        label = stringResource(R.string.sheet_custom_background_green),
+                        value = green,
+                        onValueChange = { green = it },
+                        modifier = Modifier.weight(1f).testTag("$testTagPrefix-text-color-green")
+                    )
+                    RgbComponentField(
+                        label = stringResource(R.string.sheet_custom_background_blue),
+                        value = blue,
+                        onValueChange = { blue = it },
+                        modifier = Modifier.weight(1f).testTag("$testTagPrefix-text-color-blue")
+                    )
+                }
+                Text(
+                    stringResource(R.string.sheet_text_color_preview),
+                    style = MaterialTheme.typography.titleSmall
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(pageBackgroundColor)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = stringResource(R.string.sheet_text_color_sample),
+                        color = Color(previewTextColor),
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                }
+                if (color == null && hasAnyInput) {
+                    Text(
+                        stringResource(R.string.sheet_custom_background_invalid),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { color?.let(onApply) },
+                enabled = color != null
+            ) {
+                Text(stringResource(R.string.sheet_custom_background_apply))
+            }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onReset) {
+                    Text(stringResource(R.string.sheet_custom_background_reset))
+                }
+                TextButton(onClick = onDismiss) {
+                    Text(stringResource(R.string.common_cancel))
+                }
+            }
         }
     )
 }

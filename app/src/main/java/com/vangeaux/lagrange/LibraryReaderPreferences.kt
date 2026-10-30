@@ -102,6 +102,11 @@ data class LibraryReaderPreferences(
     val tapZoneLayout: ReaderTapZoneLayout = ReaderTapZoneLayout.CURRENT_EDGES,
     val tapZoneInvertMode: ReaderTapZoneInvertMode = ReaderTapZoneInvertMode.NONE,
     val theme: EpubReaderTheme = EpubReaderTheme.Sepia,
+    val backgroundTheme: EpubReaderTheme = EpubReaderTheme.Sepia,
+    val customBackgroundColor: Int? = null,
+    val useCustomBackground: Boolean = false,
+    val customTextColor: Int? = null,
+    val useCustomTextColor: Boolean = false,
     val fontFamily: EpubReaderFontFamily = EpubReaderFontFamily.PUBLISHER_DEFAULT,
     val customFont: CustomFontRecord? = null,
     val fontScale: Float = 1f,
@@ -122,6 +127,10 @@ data class LibraryReaderPreferences(
     val twoPageSpread: ReaderSpreadMode = ReaderSpreadMode.AUTO
 ) {
     fun normalized(): LibraryReaderPreferences = copy(
+        customBackgroundColor = normalizedCustomReaderBackground(customBackgroundColor),
+        useCustomBackground = useCustomBackground && customBackgroundColor != null,
+        customTextColor = normalizedReaderTextColor(customTextColor),
+        useCustomTextColor = useCustomTextColor && customTextColor != null,
         fontScale = fontScale.coerceIn(MIN_EPUB_FONT_SCALE, MAX_EPUB_FONT_SCALE),
         lineSpacing = lineSpacing.coerceIn(DEFAULT_EPUB_LINE_SPACING, MAX_EPUB_LINE_SPACING),
         wordSpacing = wordSpacing.coerceIn(DEFAULT_EPUB_WORD_SPACING, MAX_EPUB_WORD_SPACING),
@@ -218,6 +227,15 @@ private fun libraryReaderPreferenceStorageValue(value: LibraryReaderPreferences)
             put("tapZoneLayout", readerTapZoneLayoutStorageValue(normalized.tapZoneLayout))
             put("tapZoneInvertMode", readerTapZoneInvertModeStorageValue(normalized.tapZoneInvertMode))
             put("theme", epubReaderThemeStorageValue(normalized.theme))
+            put("backgroundTheme", epubReaderThemeStorageValue(normalized.backgroundTheme))
+            put("useCustomBackground", normalized.useCustomBackground)
+            normalized.customBackgroundColor?.let {
+                put("customBackgroundColor", customReaderBackgroundHex(it))
+            }
+            put("useCustomTextColor", normalized.useCustomTextColor)
+            normalized.customTextColor?.let {
+                put("customTextColor", customReaderBackgroundHex(it))
+            }
             put("fontFamily", epubReaderFontFamilyStorageValue(normalized.fontFamily))
             normalized.customFont?.let { put("customFont", customFontStorageValue(it)) }
             put("fontScale", normalized.fontScale.toDouble())
@@ -252,13 +270,37 @@ internal fun libraryReaderPreferencesFromStorage(value: String?): Map<String, Li
                 if (libraryId.isBlank()) return@forEach
                 val item = profiles.optJSONObject(libraryId) ?: return@forEach
                 runCatching {
+                    val theme = epubReaderThemeFromStorage(item.optString("theme"))
+                    val customBackgroundColor = item.optString("customBackgroundColor")
+                        .takeIf { it.isNotBlank() }
+                        ?.toIntOrNull(16)
+                        ?.let(::normalizedCustomReaderBackground)
+                    val customTextColor = item.optString("customTextColor")
+                        .takeIf { it.isNotBlank() }
+                        ?.toIntOrNull(16)
+                        ?.let(::normalizedReaderTextColor)
                     LibraryReaderPreferences(
                         readingDirection = libraryReadingDirectionFromStorage(item.optString("readingDirection")),
                         volumeButtonPageNavigation = item.optBoolean("volumeButtonPageNavigation", false),
                         reverseVolumeButtonNavigation = item.optBoolean("reverseVolumeButtonNavigation", false),
                         tapZoneLayout = readerTapZoneLayoutFromStorage(item.optString("tapZoneLayout")),
                         tapZoneInvertMode = readerTapZoneInvertModeFromStorage(item.optString("tapZoneInvertMode")),
-                        theme = epubReaderThemeFromStorage(item.optString("theme")),
+                        theme = theme,
+                        backgroundTheme = if (item.has("backgroundTheme")) {
+                            epubReaderThemeFromStorage(item.optString("backgroundTheme"))
+                        } else {
+                            theme
+                        },
+                        customBackgroundColor = customBackgroundColor,
+                        useCustomBackground = item.optBoolean(
+                            "useCustomBackground",
+                            customBackgroundColor != null
+                        ),
+                        customTextColor = customTextColor,
+                        useCustomTextColor = item.optBoolean(
+                            "useCustomTextColor",
+                            customTextColor != null
+                        ),
                         fontFamily = epubReaderFontFamilyFromStorage(item.optString("fontFamily")),
                         customFont = customFontFromStorage(item.optString("customFont")),
                         fontScale = item.optDouble("fontScale", 1.0).toFloat(),
