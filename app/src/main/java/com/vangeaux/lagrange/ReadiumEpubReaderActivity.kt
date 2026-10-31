@@ -2025,7 +2025,7 @@ open class ReadiumEpubReaderActivity : FragmentActivity() {
     private var tapZoneTutorialHasShown = false
     private var tapZoneTutorialHideJob: Job? = null
     private var restoredLocator: Locator? = null
-    private var allowLegacyLocatorFallback = true
+    private var allowLegacyLocatorFallback = false
     private var readingSessionEnded = false
     private var readerExitPlaybackClosed = false
     private var epubImageGestureJob: Job? = null
@@ -4706,7 +4706,15 @@ open class ReadiumEpubReaderActivity : FragmentActivity() {
     }
 
     private fun persistReaderPosition(locator: Locator) {
-        val identity = persistedPositionIdentity ?: return
+        val identity = persistedPositionIdentity
+        if (identity == null) {
+            // Direct and legacy launches have no account-scoped identity. Publication callbacks
+            // start only after identity resolution, so canonical sessions cannot enter this path.
+            if (!isPreview) {
+                legacyLocatorStore.save(readerKey, locator)
+            }
+            return
+        }
         positionWriterLease ?: return
         val nextWriteMillis = maxOf(System.currentTimeMillis(), lastPositionWriteMillis + 1)
         lastPositionWriteMillis = nextWriteMillis
