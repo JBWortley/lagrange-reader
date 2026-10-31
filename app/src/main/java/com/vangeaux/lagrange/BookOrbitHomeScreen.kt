@@ -969,6 +969,11 @@ internal fun homeSectionSourceBooks(
     return if (serverWide) state.homeBooks else state.books
 }
 
+internal fun homeSectionCurrentStatusBooks(
+    state: BrowserState,
+    serverWide: Boolean
+): List<BookSummary> = if (serverWide) state.homeBooks else state.books
+
 internal fun bookAvailableFormatsForDisplay(
     book: BookSummary
 ): List<String> = book.availableFormats.ifEmpty {
@@ -7575,7 +7580,8 @@ private fun HomeFeed(
         if (!onDeckEnabled) emptyList()
         else if (serverShelves.providesBooks(HomeSection.ON_DECK)) {
             visibleProviderOnDeckBooks(
-                serverShelves.booksBySection[HomeSection.ON_DECK].orEmpty()
+                providerBooks = serverShelves.booksBySection[HomeSection.ON_DECK].orEmpty(),
+                currentBooks = libraryScopedBooks
             )
         } else generatedOnDeckBooks(
             books = libraryScopedBooks,
@@ -7591,7 +7597,8 @@ private fun HomeFeed(
     val onDeck = onDeckAll.take(HOME_PREVIEW_LIMIT)
     val onDeckSeriesAll = if (serverShelves.isServerProvided) {
         val seriesBooks = visibleProviderOnDeckBooks(
-            serverShelves.seriesBySection[HomeSection.ON_DECK].orEmpty()
+            providerBooks = serverShelves.seriesBySection[HomeSection.ON_DECK].orEmpty(),
+            currentBooks = libraryScopedBooks
         )
         seriesBooks.map { book -> (book.seriesName ?: book.title) to book }
     } else emptyList()
@@ -8752,8 +8759,10 @@ internal fun HomeSectionScreen(
         localFallbackEnabled = localOnDeckEnabled,
         hasProviderOwnedShelves = scopedServerShelves.isServerProvided
     )
+    val currentStatusBooks = homeSectionCurrentStatusBooks(state, serverWide)
     val localSectionBooks = remember(
         books,
+        currentStatusBooks,
         section,
         onDeckEnabled,
         scopedServerShelves
@@ -8764,7 +8773,8 @@ internal fun HomeSectionScreen(
                 !onDeckEnabled -> emptyList()
                 scopedServerShelves.providesBooks(HomeSection.ON_DECK) ->
                     visibleProviderOnDeckBooks(
-                        scopedServerShelves.booksBySection[HomeSection.ON_DECK].orEmpty()
+                        providerBooks = scopedServerShelves.booksBySection[HomeSection.ON_DECK].orEmpty(),
+                        currentBooks = currentStatusBooks
                     )
                 else -> generatedOnDeckBooks(books = books, enabled = true, limit = null)
             }
@@ -13462,13 +13472,46 @@ internal fun onDeckBooks(
         .let { result -> limit?.let(result::take) ?: result }
 }
 
-internal fun visibleProviderOnDeckBooks(books: List<BookSummary>): List<BookSummary> =
-    books.filterNot { book ->
-        book.isRead ||
-            book.readStatus?.isCompletedStatus() == true ||
-            book.readStatus == BookReadStatus.READING ||
-            book.readStatus == BookReadStatus.REREADING
+internal fun visibleProviderOnDeckBooks(
+    providerBooks: List<BookSummary>,
+    currentBooks: List<BookSummary> = providerBooks
+): List<BookSummary> = providerBooks
+    .map { providerBook ->
+        val currentMatches = currentProviderShelfBookMatches(providerBook, currentBooks)
+        val currentBook = currentMatches.firstOrNull { it.shouldBeHiddenFromProviderOnDeck() }
+            ?: currentMatches.firstOrNull()
+        if (currentBook == null) providerBook else providerBook.copy(
+            readStatus = currentBook.readStatus,
+            isRead = currentBook.isRead
+        )
     }
+    .filterNot { book -> book.shouldBeHiddenFromProviderOnDeck() }
+
+private fun currentProviderShelfBookMatches(
+    providerBook: BookSummary,
+    currentBooks: List<BookSummary>
+): List<BookSummary> {
+    val scopedCurrentBooks = providerBook.libraryId.takeIf(String::isNotBlank)?.let { libraryId ->
+        currentBooks.filter { currentBook ->
+            currentBook.libraryId.isBlank() || currentBook.libraryId == libraryId
+        }
+    } ?: currentBooks
+
+    providerBook.fileId?.takeIf(String::isNotBlank)?.let { fileId ->
+        scopedCurrentBooks.filter { it.fileId == fileId }
+            .takeIf { it.isNotEmpty() }
+            ?.let { return it }
+    }
+    return providerBook.id.takeIf(String::isNotBlank)
+        ?.let { bookId -> scopedCurrentBooks.filter { it.id == bookId } }
+        .orEmpty()
+}
+
+private fun BookSummary.shouldBeHiddenFromProviderOnDeck(): Boolean =
+    isRead ||
+        readStatus?.isCompletedStatus() == true ||
+        readStatus == BookReadStatus.READING ||
+        readStatus == BookReadStatus.REREADING
 
 internal fun wantToReadBooks(
     books: List<BookSummary>,

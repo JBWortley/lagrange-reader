@@ -59,6 +59,70 @@ class HomeShelfTest {
     }
 
     @Test
+    fun `provider On Deck uses current local status by file then book identity`() {
+        val providerReading = seriesBook("reading", 1.0, status = BookReadStatus.UNREAD)
+        val providerCompleted = seriesBook("completed", 2.0, status = BookReadStatus.WANT_TO_READ)
+            .copy(fileId = "provider-file-completed")
+        val providerVisible = seriesBook("visible", 3.0, status = BookReadStatus.UNREAD)
+        val currentBooks = listOf(
+            providerReading.copy(readStatus = BookReadStatus.READING),
+            providerCompleted.copy(
+                fileId = "current-file-completed",
+                readStatus = BookReadStatus.READ,
+                isRead = true
+            ),
+            providerVisible.copy(readStatus = BookReadStatus.UNREAD)
+        )
+
+        assertEquals(
+            listOf(providerVisible),
+            visibleProviderOnDeckBooks(
+                providerBooks = listOf(providerReading, providerCompleted, providerVisible),
+                currentBooks = currentBooks
+            )
+        )
+    }
+
+    @Test
+    fun `provider On Deck prefers a same-library status match`() {
+        val provider = seriesBook("shared", 1.0, status = BookReadStatus.UNREAD)
+            .copy(fileId = null, libraryId = "lib-a")
+        val otherLibraryCompleted = provider.copy(
+            libraryId = "lib-b",
+            readStatus = BookReadStatus.READ,
+            isRead = true
+        )
+        val sameLibraryUnread = provider.copy(readStatus = BookReadStatus.UNREAD)
+
+        assertEquals(
+            listOf(provider),
+            visibleProviderOnDeckBooks(
+                providerBooks = listOf(provider),
+                currentBooks = listOf(otherLibraryCompleted, sameLibraryUnread)
+            )
+        )
+    }
+
+    @Test
+    fun `provider On Deck ignores a matching status from another library`() {
+        val provider = seriesBook("shared", 1.0, status = BookReadStatus.UNREAD)
+            .copy(fileId = "shared-file", libraryId = "lib-a")
+        val otherLibraryCompleted = provider.copy(
+            libraryId = "lib-b",
+            readStatus = BookReadStatus.READ,
+            isRead = true
+        )
+
+        assertEquals(
+            listOf(provider),
+            visibleProviderOnDeckBooks(
+                providerBooks = listOf(provider),
+                currentBooks = listOf(otherLibraryCompleted)
+            )
+        )
+    }
+
+    @Test
     fun `komga book search uses the native list endpoint and payload`() {
         assertEquals(
             "/api/v1/books/list?page=0&size=100&sort=metadata.title,asc",
@@ -336,6 +400,38 @@ class HomeShelfTest {
         assertEquals(
             listOf("book-1"),
             homeSectionSourceBooks(state, HomeSection.CURRENTLY_READING, serverWide = false).map { it.id }
+        )
+    }
+
+    @Test
+    fun `On Deck see all reconciles stale shelf entries against current catalog status`() {
+        val provider = seriesBook("stale", 1.0, status = BookReadStatus.UNREAD)
+        val selectedLibraryReading = provider.copy(readStatus = BookReadStatus.READING)
+        val serverWideCompleted = provider.copy(readStatus = BookReadStatus.READ, isRead = true)
+        val state = BrowserState(
+            serverUrl = "https://example.test",
+            libraries = listOf(LibrarySummary("lib-1", "Library")),
+            selectedLibraryId = "lib-1",
+            books = listOf(selectedLibraryReading),
+            homeBooks = listOf(serverWideCompleted),
+            homeShelves = HomeShelfData(
+                booksBySection = mapOf(HomeSection.ON_DECK to listOf(provider)),
+                isServerProvided = true
+            )
+        )
+        val providerBooks = homeSectionSourceBooks(state, HomeSection.ON_DECK, serverWide = false)
+
+        assertTrue(
+            visibleProviderOnDeckBooks(
+                providerBooks = providerBooks,
+                currentBooks = homeSectionCurrentStatusBooks(state, serverWide = false)
+            ).isEmpty()
+        )
+        assertTrue(
+            visibleProviderOnDeckBooks(
+                providerBooks = providerBooks,
+                currentBooks = homeSectionCurrentStatusBooks(state, serverWide = true)
+            ).isEmpty()
         )
     }
 
