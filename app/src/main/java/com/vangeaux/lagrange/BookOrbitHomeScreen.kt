@@ -27,6 +27,7 @@ import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.FlowRow
@@ -143,6 +144,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -157,6 +159,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.asImageBitmap
@@ -200,7 +203,11 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.roundToInt
+import kotlin.math.sin
+import kotlin.math.sqrt
 import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
 import kotlinx.coroutines.launch
@@ -6378,7 +6385,7 @@ private fun ReaderTextColorSettings(
     }
     if (customTextColorDialogVisible) {
         ReaderCustomTextColorDialog(
-            initialColor = value.customTextColor,
+            initialColor = value.customTextColor ?: defaultTextColor,
             pageBackgroundColor = readerContentBackgroundColor(value),
             defaultTextColor = defaultTextColor,
             testTagPrefix = testTagPrefix,
@@ -6482,7 +6489,7 @@ private fun ReaderAppearanceSettings(
         }
         if (customBackgroundDialogVisible) {
             ReaderCustomBackgroundDialog(
-                initialColor = value.customBackgroundColor,
+                initialColor = value.customBackgroundColor ?: value.backgroundTheme.backgroundColor,
                 testTagPrefix = testTagPrefix,
                 onApply = { color ->
                     onPreferencesChange(
@@ -6835,95 +6842,195 @@ private fun ReaderSpreadSettings(
 }
 
 @Composable
-private fun RgbComponentField(
-    label: String,
-    value: String,
-    onValueChange: (String) -> Unit,
-    modifier: Modifier = Modifier
+private fun ReaderColorWheel(
+    hue: Float,
+    saturation: Float,
+    description: String,
+    testTag: String,
+    onColorSelected: (Float, Float) -> Unit
 ) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = { next -> onValueChange(next.filter(Char::isDigit).take(3)) },
-        label = { Text(label) },
-        modifier = modifier,
-        singleLine = true,
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-    )
+    val wheelSize = remember { mutableStateOf(IntSize.Zero) }
+    val currentOnColorSelected by rememberUpdatedState(onColorSelected)
+    val hueColors = remember {
+        listOf(
+            Color.Red,
+            Color.Yellow,
+            Color.Green,
+            Color.Cyan,
+            Color.Blue,
+            Color.Magenta,
+            Color.Red
+        )
+    }
+    val selectColorAt: (Offset) -> Unit = { position ->
+        val width = wheelSize.value.width.toFloat()
+        val height = wheelSize.value.height.toFloat()
+        if (width > 0f && height > 0f) {
+            val centerX = width / 2f
+            val centerY = height / 2f
+            val dx = position.x - centerX
+            val dy = position.y - centerY
+            val radius = minOf(width, height) / 2f
+            val wheelSaturation = (sqrt(dx * dx + dy * dy) / radius).coerceIn(0f, 1f)
+            val wheelHue = ((Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())) + 360.0) % 360.0)
+                .toFloat()
+            currentOnColorSelected(wheelHue, wheelSaturation)
+        }
+    }
+
+    Canvas(
+        modifier = Modifier
+            .size(308.dp)
+            .onSizeChanged { wheelSize.value = it }
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = selectColorAt)
+            }
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDragStart = selectColorAt,
+                    onDrag = { change, _ ->
+                        selectColorAt(change.position)
+                        change.consume()
+                    }
+                )
+            }
+            .testTag(testTag)
+            .semantics { contentDescription = description }
+    ) {
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val radius = size.minDimension / 2f
+        drawCircle(
+            brush = Brush.sweepGradient(hueColors, center),
+            radius = radius,
+            center = center
+        )
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(Color.White, Color.Transparent),
+                center = center,
+                radius = radius
+            ),
+            radius = radius,
+            center = center
+        )
+        val angle = Math.toRadians(hue.toDouble())
+        val indicatorCenter = Offset(
+            center.x + cos(angle).toFloat() * radius * saturation,
+            center.y + sin(angle).toFloat() * radius * saturation
+        )
+        drawCircle(Color.Black, radius = 8.8.dp.toPx(), center = indicatorCenter)
+        drawCircle(Color.White, radius = 6.4.dp.toPx(), center = indicatorCenter)
+        drawCircle(
+            color = Color.Black,
+            radius = 6.4.dp.toPx(),
+            center = indicatorCenter,
+            style = Stroke(width = 0.7.dp.toPx())
+        )
+    }
 }
 
 @Composable
-private fun ReaderCustomBackgroundDialog(
+private fun ReaderColorPickerDialog(
+    title: String,
     initialColor: Int?,
-    testTagPrefix: String,
+    colorFieldTestTag: String,
+    wheelTestTag: String,
     onApply: (Int) -> Unit,
     onReset: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    previewContent: @Composable (Int?) -> Unit
 ) {
-    fun initialComponent(shift: Int): String =
-        initialColor?.let { ((it shr shift) and 0xFF).toString() }.orEmpty()
-
-    var red by remember(initialColor) { mutableStateOf(initialComponent(16)) }
-    var green by remember(initialColor) { mutableStateOf(initialComponent(8)) }
-    var blue by remember(initialColor) { mutableStateOf(initialComponent(0)) }
-    val redValue = parseRgbComponent(red)
-    val greenValue = parseRgbComponent(green)
-    val blueValue = parseRgbComponent(blue)
-    val color = if (redValue != null && greenValue != null && blueValue != null) {
-        customReaderBackgroundColor(redValue, greenValue, blueValue)
-    } else {
-        null
+    val startingColor = initialColor ?: 0xFFFFFFFF.toInt()
+    val initialHsv = remember(initialColor) { readerColorToHsv(startingColor) }
+    var hue by remember(initialColor) { mutableFloatStateOf(initialHsv.hue) }
+    var saturation by remember(initialColor) { mutableFloatStateOf(initialHsv.saturation) }
+    var brightness by remember(initialColor) { mutableFloatStateOf(initialHsv.brightness) }
+    var hexValue by remember(initialColor) {
+        mutableStateOf(customReaderBackgroundHex(startingColor))
     }
-    val hasAnyInput = red.isNotEmpty() || green.isNotEmpty() || blue.isNotEmpty()
+    val color = parseCustomReaderHex(hexValue)
+    val invalidValue = hexValue.isNotEmpty() && color == null
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.sheet_custom_background_dialog_title)) },
+        title = { Text(title) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    RgbComponentField(
-                        label = stringResource(R.string.sheet_custom_background_red),
-                        value = red,
-                        onValueChange = { red = it },
-                        modifier = Modifier.weight(1f).testTag("$testTagPrefix-custom-background-red")
-                    )
-                    RgbComponentField(
-                        label = stringResource(R.string.sheet_custom_background_green),
-                        value = green,
-                        onValueChange = { green = it },
-                        modifier = Modifier.weight(1f).testTag("$testTagPrefix-custom-background-green")
-                    )
-                    RgbComponentField(
-                        label = stringResource(R.string.sheet_custom_background_blue),
-                        value = blue,
-                        onValueChange = { blue = it },
-                        modifier = Modifier.weight(1f).testTag("$testTagPrefix-custom-background-blue")
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Box(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    ReaderColorWheel(
+                        hue = hue,
+                        saturation = saturation,
+                        description = stringResource(R.string.sheet_custom_background_wheel_description),
+                        testTag = wheelTestTag,
+                        onColorSelected = { selectedHue, selectedSaturation ->
+                            hue = selectedHue
+                            saturation = selectedSaturation
+                            val selected = readerColorFromHsv(hue, saturation, brightness)
+                            hexValue = customReaderBackgroundHex(selected)
+                        }
                     )
                 }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        stringResource(R.string.sheet_custom_background_brightness),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Slider(
+                        value = brightness,
+                        onValueChange = { selectedBrightness ->
+                            brightness = selectedBrightness
+                            val selected = readerColorFromHsv(hue, saturation, brightness)
+                            hexValue = customReaderBackgroundHex(selected)
+                        },
+                        valueRange = 0f..1f,
+                        steps = 99,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("$wheelTestTag-brightness")
+                    )
+                    Text("${(brightness * 100).roundToInt()}%")
+                }
+                OutlinedTextField(
+                    value = hexValue,
+                    onValueChange = { entered ->
+                        val normalized = entered
+                            .trim()
+                            .removePrefix("#")
+                            .filter { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
+                            .take(6)
+                            .uppercase()
+                        hexValue = normalized
+                        parseCustomReaderHex(normalized)?.let { enteredColor ->
+                            val hsv = readerColorToHsv(enteredColor)
+                            hue = hsv.hue
+                            saturation = hsv.saturation
+                            brightness = hsv.brightness
+                        }
+                    },
+                    label = { Text(stringResource(R.string.sheet_custom_background_hex)) },
+                    prefix = { Text("#") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag(colorFieldTestTag),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii)
+                )
                 Text(
                     stringResource(R.string.sheet_custom_background_preview),
                     style = MaterialTheme.typography.titleSmall
                 )
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(
-                            color?.let { Color(it) }
-                                ?: MaterialTheme.colorScheme.surfaceVariant
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (color != null) {
-                        Text(
-                            text = customReaderBackgroundCss(color),
-                            color = Color(customReaderBackgroundTextColor(color)),
-                            style = MaterialTheme.typography.labelLarge
-                        )
-                    }
-                }
-                if (color == null && hasAnyInput) {
+                previewContent(color)
+                if (invalidValue) {
                     Text(
                         stringResource(R.string.sheet_custom_background_invalid),
                         color = MaterialTheme.colorScheme.error,
@@ -6954,6 +7061,43 @@ private fun ReaderCustomBackgroundDialog(
 }
 
 @Composable
+private fun ReaderCustomBackgroundDialog(
+    initialColor: Int?,
+    testTagPrefix: String,
+    onApply: (Int) -> Unit,
+    onReset: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    ReaderColorPickerDialog(
+        title = stringResource(R.string.sheet_custom_background_dialog_title),
+        initialColor = initialColor,
+        colorFieldTestTag = "$testTagPrefix-custom-background-hex",
+        wheelTestTag = "$testTagPrefix-custom-background-wheel",
+        onApply = onApply,
+        onReset = onReset,
+        onDismiss = onDismiss,
+        previewContent = { color ->
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(color?.let { Color(it) } ?: MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                color?.let {
+                    Text(
+                        text = customReaderBackgroundCss(it),
+                        color = Color(customReaderBackgroundTextColor(it)),
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+            }
+        }
+    )
+}
+
+@Composable
 private fun ReaderCustomTextColorDialog(
     initialColor: Int?,
     pageBackgroundColor: Int,
@@ -6963,91 +7107,28 @@ private fun ReaderCustomTextColorDialog(
     onReset: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    fun initialComponent(shift: Int): String =
-        initialColor?.let { ((it shr shift) and 0xFF).toString() }.orEmpty()
-
-    var red by remember(initialColor) { mutableStateOf(initialComponent(16)) }
-    var green by remember(initialColor) { mutableStateOf(initialComponent(8)) }
-    var blue by remember(initialColor) { mutableStateOf(initialComponent(0)) }
-    val redValue = parseRgbComponent(red)
-    val greenValue = parseRgbComponent(green)
-    val blueValue = parseRgbComponent(blue)
-    val color = if (redValue != null && greenValue != null && blueValue != null) {
-        customReaderBackgroundColor(redValue, greenValue, blueValue)
-    } else {
-        null
-    }
-    val hasAnyInput = red.isNotEmpty() || green.isNotEmpty() || blue.isNotEmpty()
-    val previewTextColor = color ?: defaultTextColor
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.sheet_text_color_dialog_title)) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    RgbComponentField(
-                        label = stringResource(R.string.sheet_custom_background_red),
-                        value = red,
-                        onValueChange = { red = it },
-                        modifier = Modifier.weight(1f).testTag("$testTagPrefix-text-color-red")
-                    )
-                    RgbComponentField(
-                        label = stringResource(R.string.sheet_custom_background_green),
-                        value = green,
-                        onValueChange = { green = it },
-                        modifier = Modifier.weight(1f).testTag("$testTagPrefix-text-color-green")
-                    )
-                    RgbComponentField(
-                        label = stringResource(R.string.sheet_custom_background_blue),
-                        value = blue,
-                        onValueChange = { blue = it },
-                        modifier = Modifier.weight(1f).testTag("$testTagPrefix-text-color-blue")
-                    )
-                }
-                Text(
-                    stringResource(R.string.sheet_text_color_preview),
-                    style = MaterialTheme.typography.titleSmall
-                )
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Color(pageBackgroundColor)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = stringResource(R.string.sheet_text_color_sample),
-                        color = Color(previewTextColor),
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                }
-                if (color == null && hasAnyInput) {
-                    Text(
-                        stringResource(R.string.sheet_custom_background_invalid),
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = { color?.let(onApply) },
-                enabled = color != null
+    ReaderColorPickerDialog(
+        title = stringResource(R.string.sheet_text_color_dialog_title),
+        initialColor = initialColor,
+        colorFieldTestTag = "$testTagPrefix-text-color-hex",
+        wheelTestTag = "$testTagPrefix-text-color-wheel",
+        onApply = onApply,
+        onReset = onReset,
+        onDismiss = onDismiss,
+        previewContent = { color ->
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(pageBackgroundColor)),
+                contentAlignment = Alignment.Center
             ) {
-                Text(stringResource(R.string.sheet_custom_background_apply))
-            }
-        },
-        dismissButton = {
-            Row {
-                TextButton(onClick = onReset) {
-                    Text(stringResource(R.string.sheet_custom_background_reset))
-                }
-                TextButton(onClick = onDismiss) {
-                    Text(stringResource(R.string.common_cancel))
-                }
+                Text(
+                    text = stringResource(R.string.sheet_text_color_sample),
+                    color = Color(color ?: defaultTextColor),
+                    style = MaterialTheme.typography.titleMedium
+                )
             }
         }
     )

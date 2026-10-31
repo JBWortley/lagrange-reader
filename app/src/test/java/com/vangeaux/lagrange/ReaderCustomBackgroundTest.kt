@@ -7,24 +7,37 @@ import org.junit.Test
 
 class ReaderCustomBackgroundTest {
     @Test
-    fun `parses valid rgb components and rejects malformed values`() {
-        assertEquals(0, parseRgbComponent("0"))
-        assertEquals(255, parseRgbComponent("255"))
-        assertEquals(7, parseRgbComponent(" 7 "))
-        assertNull(parseRgbComponent(""))
-        assertNull(parseRgbComponent("256"))
-        assertNull(parseRgbComponent("-1"))
-        assertNull(parseRgbComponent("12a"))
-        assertNull(parseRgbComponent("1234"))
+    fun `parses six digit hex colors with or without a hash prefix`() {
+        assertEquals(0xFF0A141E.toInt(), parseCustomReaderHex("#0A141E"))
+        assertEquals(0xFFABCDEF.toInt(), parseCustomReaderHex("abcdef"))
+        assertNull(parseCustomReaderHex("#12345"))
+        assertNull(parseCustomReaderHex("1234567"))
+        assertNull(parseCustomReaderHex("#12G456"))
     }
 
     @Test
-    fun `composes an opaque color only when every component is valid`() {
-        assertEquals(0xFFFF0000.toInt(), customReaderBackgroundColor(255, 0, 0))
-        assertEquals(0xFF0A141E.toInt(), customReaderBackgroundColor(10, 20, 30))
-        assertNull(customReaderBackgroundColor(256, 0, 0))
-        assertNull(customReaderBackgroundColor(0, -1, 0))
-        assertNull(customReaderBackgroundColor(0, 0, 300))
+    fun `brightness slider ranges from black to full intensity`() {
+        assertEquals(0xFF000000.toInt(), readerColorFromHsv(0f, 1f, 0f))
+        assertEquals(0xFF800000.toInt(), readerColorFromHsv(0f, 1f, 0.5f))
+        assertEquals(0xFFFF0000.toInt(), readerColorFromHsv(0f, 1f, 1f))
+    }
+
+    @Test
+    fun `brightness changes intensity without changing wheel hue or saturation`() {
+        val color = readerColorFromHsv(210f, 0.8f, 0.5f)
+        val hsv = readerColorToHsv(color)
+
+        assertEquals(210f, hsv.hue, 0.5f)
+        assertEquals(0.8f, hsv.saturation, 0.01f)
+        assertEquals(0.5f, hsv.brightness, 0.01f)
+    }
+
+    @Test
+    fun `hex color entry restores slider brightness`() {
+        val color = requireNotNull(parseCustomReaderHex("#336699"))
+        val hsv = readerColorToHsv(color)
+
+        assertEquals(0.6f, hsv.brightness, 0.01f)
     }
 
     @Test
